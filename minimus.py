@@ -1,4 +1,20 @@
-# app-paste.py
+###########################################
+# Minimus - a minimal web framework inspired by
+#   Bottle, Flask, and Pyramid
+#
+#   Early ALPHA version 2021
+#    by Jeff et. al.
+#    MIT License
+#    depends upon import of Python Paste
+#       by Chris Dent (https://pypi.org/project/Paste/)
+#     MIT License
+#       and
+#    Jinja2 Templating from the Pallets project
+#     by Armin Ronacher (BSD License)
+#     (https://palletsprojects.com/p/jinja/)
+#    
+###########################################
+from functools import wraps
 import os
 
 from jinja2 import Environment, FileSystemLoader
@@ -189,7 +205,8 @@ class Minimus:
     def _after_request(self, environ):
         """this is a hookable callback for AFTER REQUEST"""
         pass
-        
+    
+       
     def make_response(self, status_code:int, ctype=None):
         """
         make status string and  content-type WSGI compliant
@@ -270,6 +287,11 @@ class Minimus:
             raise ValueError('Minimus add_route route={} methods must be a list type')
         if self.routes is None:
             self.routes = []
+        # avoid duplication
+        for r in self.routes:
+            if r == route:
+                return
+        # finally, add route
         self.routes.append((route,handler,methods,name))
 
     def _not_found_html(self):
@@ -433,7 +455,7 @@ class Minimus:
 
     def logo(self):
         """logo() - renders a simple text logo for the server"""
-        msg=\
+        logo_text=\
 r"""
   __  __ _       _
  |  \/  (_)     (_)
@@ -446,8 +468,21 @@ r"""
  (C) 2021 Jeff et. al.
  -----------------------------------------
 """
-        return msg
+        return logo_text
     
+    def route(self, url, methods=None, name=None):
+        """route decorator ala Flask and Bottle
+        url is mandatory and follows route rules and var naming
+        @app.route(/hello, methods=['GET'], name="hello")
+        @app.route('/greet/<name>', name='greet_name')
+        """
+        def inner_decorator(f):
+            #print(f.__name__, url, methods, name)
+            self.add_route(url, f, methods=methods, name=name)
+            return f
+        return inner_decorator
+            
+        
 def render_template(filename, **kwargs):
     """flexible jinja2 rendering of filename and kwargs"""
     file_content = get_text_file(filename)
@@ -465,21 +500,6 @@ def render_html_file(filename):
     else:
         return 'ERROR: render_html_file - Failed to find {}'.format(filename)
 
-def abort(code=500, text='Unknown Error.'):
-    """ Aborts execution and causes a HTTP error. """
-    raise HTTPError(code, text)
-
-
-def redirect(url, code=None):
-    """ Aborts execution and causes a 303 or 302 redirect, depending on
-        the HTTP protocol version. """
-    if not code:
-        code = 303 if request.get('SERVER_PROTOCOL') == "HTTP/1.1" else 302
-    res = response.copy(cls=HTTPResponse)
-    res.status = code
-    res.body = ""
-    res.set_header('Location', urljoin(request.url, url))
-    raise res
 
 if __name__ == '__main__':
     # test route_encode
