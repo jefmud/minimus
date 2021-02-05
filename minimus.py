@@ -24,9 +24,11 @@
 #    
 ###########################################
 #from functools import wraps
-import json
-import os
 import datetime
+import json
+import mimetypes
+import os
+import sys
 
 from jinja2 import Environment, FileSystemLoader
 import http.client
@@ -41,6 +43,11 @@ _static_dir = None
 _template_dir = None
 
 # local utilities
+def mimeguess(filename):
+    """guess mimetype from filename, path, or url"""
+    ext = '.' + filename.split('.')[-1].lower()
+    return mimetypes.types_map.get(ext,'text/html')
+
 def search_file(filename, *args):
     """look for a filename in several locations,
     return the actual filename that is found first or None
@@ -61,9 +68,6 @@ def search_file(filename, *args):
             return fn
     return None
 
-
-#module_start_response = None
-#module_environ = None
         
 def route_match(route, path):
     """will return simple path and dictionary (keyword arguments)
@@ -211,9 +215,11 @@ class Minimus:
         self.environ = None
         self.start_response = None
 
-    def bin_encode(self, x):
+    def response_encode(self, x):
         if isinstance(x, str):
             return [x.encode(self.charset, 'ignore')]
+        else:
+            return [x]
         return x
         
     def _before_request(self, environ):
@@ -267,7 +273,7 @@ class Minimus:
         app = Minimus(__name__)
         wsgi = app.wsgi
         """
-        # save these locally
+        # save these to the object -may be needed by downstream methods
         self.start_response = start_response
         self.environ = environ
         
@@ -281,13 +287,14 @@ class Minimus:
 
         # route dispatcher
         path_info = environ.get('PATH_INFO')
-        content, status_str, headers = self.render_to_response(path_info)
+        response_body, status_str, headers = self.render_to_response(path_info)
         
         # after request
         self.after_request(environ)
         
+        # classic WSGI return
         start_response(status_str, headers)
-        return iter(content)
+        return iter(response_body)
 
     def add_route(self, route, handler, methods=None, name=None):
         """simple route addition to Mimimus application object
@@ -386,42 +393,49 @@ class Minimus:
         
         if not(self.routes):
             # IF NO ROUTES, then show server logo and exit
+            response_body = "<pre>" + self.logo() + "</pre>"
             status_str, headers = self.make_response(200)
-            ### RETURN 200 Logo (DEFAULT NO ROUTES) ###
-            content = "<pre>" + self.logo() + "</pre>"
-            return self.bin_encode(content), status_str, headers
+            headers.append(('Content-Length', str(len(response_body))))
+            return self.response_encode(response_body), status_str, headers
             
         # handle static files
         if self.static_dir in path_info:
-            content = get_file(path_info, self.app_dir, self.static_dir, self.template_dir, ftype='binary')
+            # search the usual locations for our file, return if exists
+            local_fname = search_file(path_info, self.app_dir, self.static_dir, self.template_dir)
             
             # interpret response by filename extension
-            if content:
+            if local_fname:
                 # handle css and javascript status, headers
                 if path_info.endswith('.css'):
-                    content = get_text_file(path_info)                    
+                    response_body = get_text_file(path_info)                    
                     status_str, headers = self.make_response(200, 'text/css')
                 elif path_info.endswith('.js'):
-                    content = get_text_file(path_info)
+                    response_body = get_text_file(path_info)
                     status_str, headers = self.make_response(200, 'text/javascript')
-                elif ext_check(path_info, ['jpg', 'jpeg', 'gif', 'png']):
+                elif ext_check(path_info, ['jpg', 'jpeg', 'gif', 'png', 'ico']):
                     # image rendering short circuits below to return
-                    content = get_file(path_info, ftype='binary')
+                    response_body = get_file(path_info, ftype='binary')
                     status_str = '200 OK'
-                    ext = path_info[-3:]
-                    headers = [ ('Content-Type', f'image/{ext}'), ('Content-length', str(len(content))) ]
-                    return [content], status_str, headers
+                    # construct headers to contain expected image type
+                    mimetype = mimeguess(path_info)
+                    headers = [ ('Content-Type', mimetype), ('Cache-Control', 'public, max-age=43200') ]
+                    headers.append(('Content-Length', str(len(response_body))))
+                    # returning image here 3-tuple
+                    return [response_body], status_str, headers
                 else:
-                    # default
-                    content = get_text_file(path_info)
+                    # default html/text
+                    response_body = get_text_file(path_info)
                     status_str, headers = self.make_response(200)
             else:
                 # path_info file not found, respond 404
                 status_str, headers = self.make_response(404)
-                content = self.not_found_html()
+                response_body = self.not_found_html()
                 
             ### RETURN STATIC CONTENT or NOT FOUND ###
-            return self.bin_encode(content), status_str, headers
+            # finally add the content length to the headers
+            headers.append(('Content-Length', str(len(response_body))))
+            # return the 3-tuple
+            return self.response_encode(response_body), status_str, headers
         
         ### Handle routes    
         for route, handler, methods, _ in self.routes:
@@ -437,35 +451,38 @@ class Minimus:
                     if isinstance(handler_response, tuple): 
                         if len(handler_response) == 3:
                             # fully formed response is a 3-tuple
-                            content = handler_response[0]
+                            response_body = handler_response[0]
                             status_str = handler_response[1]
                             headers = handler_response[2]
                         else:
                             # return of content and status_code integer
                             status_str, headers = self.make_response(int(handler_response[1]))
-                            content = handler_response[0]
+                            response_body = handler_response[0]
                     else:
                         # simple status 200 is just a string!
                         if isinstance(handler_response, str): 
                             status_str, headers = self.make_response(200)
-                            content = handler_response
+                            response_body = handler_response
                         else:
                             # if not a string, programmer screwed up return a 400 Bad Response
                             status_str, headers = self.make_response(400)
-                            content = f'<h1>{path_info} produced incompatible response.</h1>\n<p>None type returned</p>'
+                            response_body = f'<h1>{path_info} produced incompatible response.</h1>\n<p>None type returned</p>'
 
                 else:
                     # return a 405 error, method not allowed.
                     status_str, headers = self.make_response(405)
-                    content = '<h1>405 Method not allowed</h1>'
+                    response_body = '<h1>405 Method not allowed</h1>'
                     
                 # finally return our response to wsgi server
-                return self.bin_encode(content), status_str, headers
+                
+                headers.append(('Content-Length', str(len(response_body))))              
+                return self.response_encode(response_body), status_str, headers
 
         # no matching route found, respond 404
         status_str, headers = self.make_response(404)
-        content = self.not_found_html()
-        return self.bin_encode(content), status_str, headers
+        response_body = self.not_found_html()
+        headers.append(('Content-Length', str(len(response_body))))        
+        return self.response_encode(response_body), status_str, headers
     
     
     def redirect(self, path_info):
@@ -502,7 +519,10 @@ r"""
             
     def jsonify(self, datadict):
         # encode and return JSON, may have to get BSON for some encodings
-        return json.dumps(datadict), '200 OK', [('Content-Type',f'application/json;charset={self.charset}')]
+        response_body = json.dumps(datadict)
+        headers = [('Content-Type',f'application/json;charset={self.charset}')]
+        headers.append(('Content-Length', str(len(response_body))))
+        return response_body, '200 OK', headers
     
     def get_cookies(self, environ):
         """
@@ -541,6 +561,33 @@ r"""
             value = morsel.value
         return value
     
+def send_from_directory(filename, *args, **kwargs):
+    """sends a file from directory(filename, args=list of directories to try, kwargs=keyword arguments)
+    possible keyword arguments
+    mimetype='image/png'
+    ftype='binary'
+    """
+    response_body = get_file(filename, *args, **kwargs)
+    if response_body:
+        # set the mimetype
+        if 'mimetype' in kwargs:
+            mimetype = kwargs['mimetype']
+        else:
+            mimetype = mimeguess(filename)
+            
+        status_str = '200 OK'
+        headers = [('Content-Type', mimetype), ('Cache-Control', 'public, max-age=43200')]
+        if kwargs.get('as_attachment'):
+            headers.append(('Content-Disposition', f'attachment; filename={filename}'))
+            
+    else:
+        response_body = f'named resource not found: <b>{filename}</b>'
+        status_str = '404 ERROR'
+        headers = [('Content-Type','text/html')]
+        
+    return response_body, status_str, headers
+                   
+
 def render_template(filename, **kwargs):
     """flexible jinja2 rendering of filename and kwargs"""
     template_dir = ''
