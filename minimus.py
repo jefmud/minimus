@@ -42,16 +42,176 @@ _app_dir = None
 _static_dir = None
 _template_dir = None
 
+class JSObj(dict):
+    """a utility class that mimics a JavaScript Object"""
+    def __getattr__(self, name):
+        if name in self:
+            return self[name]
+        else:
+            return None
+    def __setattr__(self, name, value):
+        self[name] = value
+    def __delattr__(self, name):
+        if name in self:
+            del self[name]
+        else:
+            raise AttributeError("No such attribute: " + name)
+
+# A global object
+g = JSObj()
+
+import http.client
+import json
+import datetime
+
+class Response:
+    def __init__(self, response_body=None, status_code=200, headers=None, charset='UTF-8'):
+        self.charset = charset
+        self._headers = []
+        if isinstance(response_body, Response):
+            # Make a response from a Response.
+            status_code = response_body.status_code
+            headers = response_body.headers
+            response_body = response_body.body
+
+        if isinstance(status_code, str):
+            # if status code came as a string, convert to int
+            status_code = int(status_code.split(' ')[0])
+            
+        self.status_code = status_code
+        
+        if response_body is None:
+            # make an empty response which is a status_str
+            response_body = self.status
+            
+        self.response_body = response_body
+        self.add_header(headers)
+        
+    @classmethod
+    def create_from_handler(cls, handler_response):
+        """A class factory from handler/callback response"""
+        if isinstance(handler_response, Response):
+            return cls(handler_response.body, handler_response.status, handler_response.headers)
+        if isinstance(handler_response, tuple):
+            if len(handler_response) == 3:
+                return cls(handler_response[0], handler_response[1], handler_response[2])
+            if len(handler_response) == 2:
+                return cls(handler_response[0], handler_response[1])
+        elif isinstance(handler_response, str) or isinstance(handler_response, dict):
+            return cls(handler_response)
+        else:
+            pass
+        cls('Incompatible response', 400)
+            
+    def add_cookie(self, name, value, secret=None, days=365):
+        dt = datetime.datetime.now() + datetime.timedelta(days=days)
+        fdt = dt.strftime('%a, %d %b %Y %H:%M:%S GMT')
+        secs = days * 86400
+        if secret:
+            value = encrypt(secret, value).decode(self.charset, 'ignore')
+        header_str = ('Set-Cookie', '{}={}; Expires={}; Max-Age={}; Path=/'.format(name, value, fdt, secs))
+        self.add_header(header_str)
+        
+    def delete_cookie(self, name):
+        self.add_cookie(name, '', days=0)
+        
+    def add_header(self, headers):
+        if isinstance(headers, str):
+            # if headers was given as a string
+            self._headers.append(('Content-Type', headers))
+        elif isinstance(headers, tuple):
+            # headers given as a tuple
+            self._headers.append(headers)
+        elif isinstance(headers, list):
+            # user gave us a fully formed header
+            self._headers += headers
+        else:
+            pass
+
+    def add_headers(self, headers):
+        self.add_header(headers)
+        
+    @property    
+    def content_length_header(self):
+        body = self.body[0]
+        return [('Content-Length', str(len(body)))]
+    
+    def handle_as_json(self):
+        response_body = json.dumps(self.response_body).encode(self.charset, 'ignore')
+        self.add_header( ('Content-Type',f'application/json;charset={self.charset}') )
+        return[response_body]
+
+    def response_encode(self):
+        if isinstance(self.response_body, str):
+            return [self.response_body.encode(self.charset, 'ignore')]
+        elif isinstance(self.response_body, list):
+            if len(self.response_body) > 0 and isinstance(self.response_body[0], dict):
+                return self.handle_as_json()
+            return self.response_body
+        elif isinstance(self.response_body, dict):
+            # encode and return JSON, may have to get BSON for some encodings
+            return self.handle_as_json()
+        else:
+            # it's already binary
+            pass
+        return [self.response_body]
+
+
+    def __repr__(self):
+        # build the status string, using the standard helper
+        if not self._headers:   
+            self._headers = [('Content-Type', f'text/html;charset={self.charset}')]
+                       
+        return f'Response({self.body}, {self.status}, {self.headers}'
+    
+    def __call__(self):
+        return self.body, self.status, self.headers
+
+    @property
+    def body(self):
+        return self.response_encode()
+
+    @property
+    def status(self):
+        rstr = http.client.responses.get(self.status_code, 'UNKNOWN')
+        return f"{self.status_code} {rstr}"
+
+    @property
+    def headers(self):
+        if not self._headers:   
+            self._headers = [('Content-Type', f'text/html;charset={self.charset}')]
+        return self._headers + self.content_length_header
+    
+    @property
+    def wsgi(self):
+        return self.body, self.status, self.headers
+
 # local utilities
 def mimeguess(filename):
-    """guess mimetype from filename, path, or url"""
+    """guess mimetype from filename, path, or url
+    
+    Args:
+        filename (str): a filename str to check
+        
+    Returns:
+        str: returns a mimetype guess for the file
+        
+    Example:
+       mimeguess('MyPicture.png') ==> 'image/png'
+    """
     ext = '.' + filename.split('.')[-1].lower()
     return mimetypes.types_map.get(ext,'text/html')
 
 def search_file(filename, *args):
     """look for a filename in several locations,
     return the actual filename that is found first or None
-    args = list of directories to examine
+    
+    Args:
+        filename (str): the file to search for existence
+        *args (str): 0 or more directories to examine
+        
+    Returns:
+        str: the full path of the exisiting file or None
     """
     fname = filename
     if filename.startswith('/'):
@@ -70,13 +230,26 @@ def search_file(filename, *args):
 
         
 def route_match(route, path):
-    """will return simple path and dictionary (keyword arguments)
-    route = framework route syntax route
-    path = environment PATH_INFO
-    route is of the form /thispage
-    or a route with a variable /thispage/<var>
-    or the SPECIAL path /something/<mypath:path> which captures
-    an entire path in that position
+    """check if a Mimimus route and env PATH_INFO match and
+    parse the keyword arguments in the path.
+    
+    Args:
+        route (str): Mimimus route. Expects framework route syntax
+        path (str): actual url PATH_INFO request
+    Returns:
+        bool, dict: True/False on route matching path, dict contains matching keyword args
+    
+    Explanation:
+       route is of the form "/thispage"
+       or a route with a variable "/thispage/<varname>"
+       or the SPECIAL path "/something/<mypath:path>" which captures
+          an entire path in that position
+          
+    Example:
+        route_match('/hello','/hello') ==> True, {}
+        route_match('/hello/<name>', '/hello/World') ==> True, {"name":"World"}
+        route_match('/<blogname>/<entryname>', '/Wonderblog/I-am-the-Walrus')
+            ==> True, {"blogname":"WonderBlog", "entryname":"I-am-the-Walrus"}
     """
     # explode the route and path parts
     rparts = route.split('/')
@@ -114,8 +287,18 @@ def route_match(route, path):
 
 def route_encode(route, **kwargs):
     """given a route and matching kwargs, return a URL
-    e.g. route = '/hello/<name>' kwargs={"name":"George"}
-    will produce /hello/George
+    
+    Args:
+        route (str): a route string in route syntax
+        **kwargs (keyword arguments): keywords should match varnames in route
+        
+    Returns:
+        str: returns the path from route and keyword args
+    
+    Example:
+        route = '/hello/<name>' kwargs={"name":"George"}
+        route_encode('/hello/<name>', name="George") ==>
+            /hello/George
     """
     rparts = route.split('/')
     nparts = []
@@ -147,12 +330,21 @@ def route_decode(route):
 def get_file(filename, *args, **kwargs):
     """get text file or return None, searches the likely paths to find the file
     if not found, return None
-    *args should contain directories to look into for the filename
+    
+    Args:
+        filename (str): a filename to search
+        *args (str): multiple directory candidates for file location first one to match wins
+        **kwargs (keyword arguments): default ftype='text' also would use ftype='binary'
+    
+    Example:
+        get_file('index.html', 'templates', ftype='text')
+        get_file('mylogo.gif', 'static/images', ftype='binary')
     """
     real_filename = search_file(filename, *args)
     file_contents = None
     if real_filename: 
-        if kwargs.get('ftype') == 'binary':
+        if 'bin' in kwargs.get('ftype',''):
+            # binary file types
             with open(real_filename, 'rb') as fp:
                 file_contents = fp.read()
         else:
@@ -161,38 +353,139 @@ def get_file(filename, *args, **kwargs):
             
     return file_contents
 
-def get_text_file(filename, *args, ftype='text'):
-    """call get_file for a text file"""
+def get_text_file(filename, *args):
+    """call get_file for a text file - looks for the file in multiple directorys
+    
+    Args:
+        filename (str) - a filename
+        *args (str) - 0 or more directories to return a file from
+        
+    Returns:
+        str: the contents of the file or None
+        
+    see "get_file"
+    """
     return get_file(filename, *args)
 
 def get_file_size(filename, *args):
-    """return the size of a filename, search likely paths"""
+    """return the size of a filename, search likely paths
+    
+    Args:
+        filename (str) - a full pathname or relative path name of a file
+        *args (str) - 0 or more paths under which to locate the file
+        
+    Returns:
+        int: the size in bytes of the file
+    """
     real_filename = search_file(filename, *args)
     if real_filename:
         return os.path.getsize(real_filename)
     return 0
 
 def ext_check(pathname, ext_list):
-    """check if pathname has an extension in the ext_list"""
+    """check if pathname has an extension in the ext_list
+    
+    Args:
+        pathname (str): some pathname with file and extension
+        ext_list (list of str): a list of extensions
+        
+    Returns:
+        bool: True if pathname ends in one of the extensions
+        
+    Usage:
+        x = 'MyPicture.png'
+        if ext_check(x, ['jpg','png','jpeg']):
+            print(x, "is a picture")
+        
+    """
     for ext in ext_list:
-        if pathname.lower().endswith(ext):
+        if pathname.lower().endswith(ext.lower()):
             return True
     return False
 
 def real_path(path):
+    """real_path(path) - returns the full path in the OS
+    Args:
+        path (str) - the path or relative path
+    Returns:
+        (str) - the full path in the OS
+    """
     return os.path.dirname(os.path.realpath(path))
+
+def header_get(headers, header_key):
+    """header_get() - return a header value given a particular header_key
+    Args:
+        headers (list): a list of headers in WSGI Response
+        header_key (str): a string key to be searched in a header
+    Returns:
+        str: The header value or None if not found
+    """
+    for header in headers:
+        if header[0].lower() == header_key.lower():
+            return header[1]
+    return None
+
+def get_cookies(environ):
+        """
+        Gets a cookie object (which is a dictionary-like object) from the
+        request environment; caches this value in case get_cookies is
+        called again for the same request.
+        """
+        header = environ.get('HTTP_COOKIE', '')
+        if 'minimus.cookies' in environ:
+            cookies, check_header = environ['minimus.cookies']
+            if check_header == header:
+                return cookies
+        cookies = SimpleCookie()
+        try:
+            cookies.load(header)
+        except CookieError:
+            pass
+        environ['minimus.cookies'] = (cookies, header)
+        return cookies
+    
+    
+def get_cookie(environ, name, secret=None):
+    """get a named cookie from the environment
+    
+    Args:
+        environ (dict): the WSGI environment which should contain any cookies
+        name (str): the name of the cookie to retrieve
+        secret (str): a server-side secret for signed cookies
+        
+    Returns:
+        str: the cookie value or None
+    """
+    cookies = get_cookies(environ)
+    morsel = cookies.get(name)
+    value = None
+    if morsel:
+        if secret:
+            value = decrypt(secret, morsel.value).decode('UTF-8', 'ignore')
+        else:
+            value = morsel.value
+    return value    
 
 # our framework
 class Minimus:
-    def __init__(self, app_file, template_directory=None, static_dir=None, quiet=False, charset='UTF-8'):
+    def __init__(self, app_file, template_dir="templates",
+                 static_dir="static", quiet=False, charset='UTF-8'):
+        """Minimus initialization
+        
+        Args:
+            app_file (str): required, typically '__main__' used to establish real OS path
+            template_dir (str): path or relative path to template directory default="templates"
+            static_dir (str): path or relative path to static files default="static"
+            quiet (bool): used in development mode to see environmen on the console default=False
+            charset (str): used for response encoding default='UTF-8'
+            
+        Example:
+            from minimus import Minimus
+            app = Minimus(__name__)
+        """
         global _app_dir, _template_dir, _static_dir # module will need this
         self.routes = None
-        if template_directory is None:
-            # default template directory
-            template_directory = "templates"
-        if static_dir is None:
-            # default static directory
-            static_dir = "static"
+
         # make sure we know the current app's directory in self and module
         self.secret_key = None
         self.cookies = {}
@@ -203,10 +496,11 @@ class Minimus:
         _app_dir = self.app_dir
         self.static_dir = static_dir
         _static_dir = static_dir
-        self.template_dir = template_directory
+        self.template_dir = template_dir
         _template_dir = self.template_dir
         
         # request "hook" can be replaced by external callback
+        # a little ugly to do this way, but works
         self.not_found_html = self._not_found_html
         self.before_request = self._before_request
         self.after_request = self._after_request
@@ -394,9 +688,7 @@ class Minimus:
         if not(self.routes):
             # IF NO ROUTES, then show server logo and exit
             response_body = "<pre>" + self.logo() + "</pre>"
-            status_str, headers = self.make_response(200)
-            headers.append(('Content-Length', str(len(response_body))))
-            return self.response_encode(response_body), status_str, headers
+            return Response(response_body).wsgi
             
         # handle static files
         if self.static_dir in path_info:
@@ -407,35 +699,29 @@ class Minimus:
             if local_fname:
                 # handle css and javascript status, headers
                 if path_info.endswith('.css'):
-                    response_body = get_text_file(path_info)                    
-                    status_str, headers = self.make_response(200, 'text/css')
+                    response_body = get_text_file(path_info)
+                    response = Response(response_body, 200, 'text/css')
                 elif path_info.endswith('.js'):
                     response_body = get_text_file(path_info)
-                    status_str, headers = self.make_response(200, 'text/javascript')
+                    response = Response(response_body, 200, 'text/javascript') 
                 elif ext_check(path_info, ['jpg', 'jpeg', 'gif', 'png', 'ico']):
                     # image rendering short circuits below to return
                     response_body = get_file(path_info, ftype='binary')
-                    status_str = '200 OK'
-                    # construct headers to contain expected image type
+                    # construct headers to contain expected image type, and cache
                     mimetype = mimeguess(path_info)
                     headers = [ ('Content-Type', mimetype), ('Cache-Control', 'public, max-age=43200') ]
-                    headers.append(('Content-Length', str(len(response_body))))
-                    # returning image here 3-tuple
-                    return [response_body], status_str, headers
+                    response = Response(response_body, 200, headers)
                 else:
                     # default html/text
                     response_body = get_text_file(path_info)
-                    status_str, headers = self.make_response(200)
+                    response = Response(response_body)
             else:
                 # path_info file not found, respond 404
-                status_str, headers = self.make_response(404)
                 response_body = self.not_found_html()
-                
-            ### RETURN STATIC CONTENT or NOT FOUND ###
-            # finally add the content length to the headers
-            headers.append(('Content-Length', str(len(response_body))))
-            # return the 3-tuple
-            return self.response_encode(response_body), status_str, headers
+                response = Response(response_body, 404)
+            
+            # return the response to the WSGI server
+            return response.wsgi
         
         ### Handle routes    
         for route, handler, methods, _ in self.routes:
@@ -447,42 +733,16 @@ class Minimus:
                 if request_method in methods:
                     # get the handler/callback response
                     handler_response = handler(self.environ, **kwargs)
-                    
-                    if isinstance(handler_response, tuple): 
-                        if len(handler_response) == 3:
-                            # fully formed response is a 3-tuple
-                            response_body = handler_response[0]
-                            status_str = handler_response[1]
-                            headers = handler_response[2]
-                        else:
-                            # return of content and status_code integer
-                            status_str, headers = self.make_response(int(handler_response[1]))
-                            response_body = handler_response[0]
-                    else:
-                        # simple status 200 is just a string!
-                        if isinstance(handler_response, str): 
-                            status_str, headers = self.make_response(200)
-                            response_body = handler_response
-                        else:
-                            # if not a string, programmer screwed up return a 400 Bad Response
-                            status_str, headers = self.make_response(400)
-                            response_body = f'<h1>{path_info} produced incompatible response.</h1>\n<p>None type returned</p>'
-
+                    return Response(handler_response).wsgi
                 else:
                     # return a 405 error, method not allowed.
-                    status_str, headers = self.make_response(405)
                     response_body = '<h1>405 Method not allowed</h1>'
-                    
-                # finally return our response to wsgi server
-                
-                headers.append(('Content-Length', str(len(response_body))))              
-                return self.response_encode(response_body), status_str, headers
+                    return Response(response_body, 405).wsgi
 
         # no matching route found, respond 404
-        status_str, headers = self.make_response(404)
+        # status_str, headers = self.make_response(404)
         response_body = self.not_found_html()
-        headers.append(('Content-Length', str(len(response_body))))        
-        return self.response_encode(response_body), status_str, headers
+        return Response(response_body, 404).wsgi
     
     
     def redirect(self, path_info):
@@ -524,42 +784,7 @@ r"""
         headers.append(('Content-Length', str(len(response_body))))
         return response_body, '200 OK', headers
     
-    def get_cookies(self, environ):
-        """
-        Gets a cookie object (which is a dictionary-like object) from the
-        request environment; caches this value in case get_cookies is
-        called again for the same request.
-        """
-        header = environ.get('HTTP_COOKIE', '')
-        if 'minimus.cookies' in environ:
-            cookies, check_header = environ['minimus.cookies']
-            if check_header == header:
-                return cookies
-        cookies = SimpleCookie()
-        try:
-            cookies.load(header)
-        except CookieError:
-            pass
-        environ['minimus.cookies'] = (cookies, header)
-        return cookies
-    
-    def set_cookie_header(self, name, value, secret=None, days=365):
-        dt = datetime.datetime.now() + datetime.timedelta(days=days)
-        fdt = dt.strftime('%a, %d %b %Y %H:%M:%S GMT')
-        secs = days * 86400
-        if secret:
-            value = encode(secret, value)
-        return ('Set-Cookie', '{}={}; Expires={}; Max-Age={}; Path=/'.format(name, value, fdt, secs))
-    
-    def get_cookie(self, name, secret=None):
-        """need to encrypt the cookies, we should get there soon"""
-        cookies = self.get_cookies(self.environ)
-        morsel = cookies.get(name)
-        if secret:
-            value = decode(secret, morsel.value)
-        else:
-            value = morsel.value
-        return value
+   
     
 def send_from_directory(filename, *args, **kwargs):
     """sends a file from directory(filename, args=list of directories to try, kwargs=keyword arguments)
@@ -575,17 +800,16 @@ def send_from_directory(filename, *args, **kwargs):
         else:
             mimetype = mimeguess(filename)
             
-        status_str = '200 OK'
         headers = [('Content-Type', mimetype), ('Cache-Control', 'public, max-age=43200')]
         if kwargs.get('as_attachment'):
             headers.append(('Content-Disposition', f'attachment; filename={filename}'))
             
-    else:
-        response_body = f'named resource not found: <b>{filename}</b>'
-        status_str = '404 ERROR'
-        headers = [('Content-Type','text/html')]
+        return Response(response_body, 200, headers)
+    
+    response_body = f'named resource not found: <b>{filename}</b>'
+    status = 400
         
-    return response_body, status_str, headers
+    return Response(response_body, status)
                    
 
 def render_template(filename, **kwargs):
@@ -609,7 +833,7 @@ def render_template(filename, **kwargs):
     if file_content:
         template = Environment(loader=FileSystemLoader([template_dir], followlinks=True)).from_string(file_content)
         #template = jinja2.Template(file_content)
-        return template.render(**kwargs)
+        return template.render(g=g, **kwargs)
     return "ERROR: render_template - Failed to find {}".format(filename)
 
 def render_html_file(filename, *args):
@@ -915,37 +1139,106 @@ def parse_formvars(environ, include_get_vars=True, encoding=None, errors=None):
         formvars.update(parse_querystring(environ))
     return formvars
 
+# obscure.py
+# these routines are meant to obscure data, not really encrypt it in a secure way.
+# using a long random key really helps make this more secure
+##################################################################
+# functions to use are obscure, unobscure, encrypt, decrypt
+# please use Python simple_crypt if you want true security
+# all strings should be UTF-8 or an error will occur
+# e.g. assuming you want UTF-8
+# msg = b"Hello World"
+# msg = "Hello World".encode('UTF-8')
+# key = b'IamSekret'
+# obscure(msg) => zlib_compressed_string
+# unobscure(zlib_comressed_string) => msg
+# encrypt(msg, key) => cipher
+# decrypt(cipher, key) => msg
+################################################################
+import zlib
+from base64 import urlsafe_b64encode as b64e, urlsafe_b64decode as b64d
 
+def obscure(data: bytes) -> bytes:
+    return b64e(zlib.compress(data, 9))
 
-def encode(key, string):
-    encoded_chars = []
-    for i in range(len(string)):
-        key_c = key[i % len(key)]
-        encoded_c = chr(ord(string[i]) + ord(key_c) % 256)
-        encoded_chars.append(encoded_c)
-    encoded_string = ''.join(encoded_chars)
-    encoded_string = encoded_string.encode('latin') if six.PY3 else encoded_string
-    return base64.urlsafe_b64encode(encoded_string).rstrip(b'=')
+def unobscure(obscured: bytes) -> bytes:
+    return zlib.decompress(b64d(obscured))
 
-def decode(key, string):
-    string = b"b's9LHug'"
-    string = base64.urlsafe_b64decode(string + b'===')
-    #string = base64.urlsafe_b64decode(string)
-    string = string.decode('latin') if six.PY3 else string
-    encoded_chars = []
-    for i in range(len(string)):
-        key_c = key[i % len(key)]
-        encoded_c = chr((ord(string[i]) - ord(key_c) + 256) % 256)
-        encoded_chars.append(encoded_c)
-    encoded_string = ''.join(encoded_chars)
-    return encoded_string
+def xor_strings(s, t) -> bytes:
+    """xor two strings together."""
+    if isinstance(s, str):
+        # Text strings contain single characters
+        return b"".join(chr(ord(a) ^ ord(b)) for a, b in zip(s, t))
+    else:
+        # Python 3 bytes objects contain integer values in the range 0-255
+        return bytes([a ^ b for a, b in zip(s, t)])
+    
+def __keypad(msg, key):
+    """pad the key"""
+    _key = key
+    while len(_key) < len(msg):
+        _key += _key
+    return _key[:len(msg)]
+    
+# if you want decent security, use simple crypt
+#from simplecrypt import encrypt, decrypt
+
+def _encrypt(password, plaintext):
+    """this is a workalike of simplecrypt.encrypt()
+    It is only be used for non-critical security
+    """
+    _key = password
+    if isinstance(password, str):
+        _key = password.encode('UTF-8')
+    if isinstance(plaintext, str):
+        plaintext = plaintext.encode('UTF-8')
+    _key = __keypad(plaintext, _key)
+    cipher = xor_strings(plaintext, _key)
+    ciphertext = obscure(cipher)
+    return ciphertext
+
+def _decrypt(password, ciphertext):
+    """this is a workalike of simplecrypt.encrypt()
+    It should only be used for non-critical security
+    """
+    _key = password
+    if isinstance(password, str):
+        _key = password.encode('UTF-8')
+    if isinstance(ciphertext, str):
+        ciphertext = ciphertext.encode('UTF-8')
+    _key = __keypad(ciphertext, _key)
+    cipher = unobscure(ciphertext)
+    decrypted = xor_strings(cipher, _key)
+    return decrypted
+
+def encrypt(password, plaintext, rounds=3):
+    """encryption with rounds, rounds and password must match"""
+    cipher_text = plaintext
+    if rounds < 2:
+         rounds = 2
+    for _ in range(rounds):
+        cipher_text = _encrypt(password, cipher_text)
+    return cipher_text
+
+def decrypt(password, ciphertext, rounds=3):
+    """decryption with rounds, rounds and password must match"""
+    if rounds < 2:
+         rounds = 2
+    plaintext = ciphertext
+    for _ in range(rounds):
+        try:
+            plaintext = _decrypt(password, plaintext)
+        except:
+            return 'ERROR'
+    return plaintext
+
 
 def encode_tests():
     print("* encode_test")
-    key = 'IamASecret'
-    string = 'Santa Claus is coming to town!'
-    encval = encode(key, string)
-    decval = decode(key, encval)
+    key = b'IamASecret'
+    string = b'Santa Claus is coming to town!'
+    encval = encrypt(key, string)
+    decval = decrypt(key, encval)
     assert(string!=encval)
     assert(string==decval)
     assert(route_encode('/edit') == '/edit')
