@@ -6,11 +6,11 @@
 #   Early ALPHA version 2021
 #    by Jeff et. al.
 #    MIT License
-#    
+#
 #     Some code is influenced and "borrowed"
 #     from Python Paste (under MIT license)
 #       by Chris Dent (https://pypi.org/project/Paste/)
-# 
+#
 #       and
 #
 #    Jinja2 best of class Templating
@@ -21,26 +21,29 @@
 #    Other Python standard libraries included
 #    also, waitress and gevent are excellent
 #    choices for alternate WSGI servers
-#    
+#
 ###########################################
 #from functools import wraps
+import base64
+import cgi
 import datetime
+import http.client
+from http.cookies import SimpleCookie, Morsel, CookieError
 import json
 import mimetypes
 import os
+import pickle
+import random
+import six
+import string
 import sys
+from urllib.parse import parse_qsl
 
+# from pallets project, best of class template engine
 from jinja2 import Environment, FileSystemLoader
-import http.client
-from http.cookies import SimpleCookie, Morsel, CookieError
-import six, base64
 
-#from paste.request import parse_formvars
-
-# global level
-_app_dir = None
-_static_dir = None
-_template_dir = None
+# possible request class
+request = None
 
 class JSObj(dict):
     """a utility class that mimics a JavaScript Object"""
@@ -56,37 +59,73 @@ class JSObj(dict):
             del self[name]
         else:
             raise AttributeError("No such attribute: " + name)
+        
+# global level
+_app = None
+_app_dir = None
+_static_dir = None
+_template_dir = None
 
 # A global object
 g = JSObj()
 
-import http.client
-import json
-import datetime
+def token_generator(size=12, chars=string.ascii_uppercase + string.digits):
+    return ''.join(random.choice(chars) for _ in range(size))
 
+class Request:
+    def __init__(self, environ):
+        self.obj = JSObj(environ)
+        
+request = None
+
+def cookie_header(name, value, secret=None, days=365, charset='utf-8'):
+    """create a cookie-header string"""
+    if not isinstance(value, str):
+        raise ValueError('add_cookie value must be a string type')
+    dt = datetime.datetime.now() + datetime.timedelta(days=days)
+    fdt = dt.strftime('%a, %d %b %Y %H:%M:%S GMT')
+    secs = days * 86400
+    if secret:
+        value = encrypt(secret, value).decode(charset, 'ignore')
+    header_str = ('Set-Cookie', '{}={}; Expires={}; Max-Age={}; Path=/'.format(name, value, fdt, secs))
+    return header_str
+
+# important Response object
 class Response:
     def __init__(self, response_body=None, status_code=200, headers=None, charset='UTF-8'):
         self.charset = charset
         self._headers = []
+        # if another Response object is sent
         if isinstance(response_body, Response):
             # Make a response from a Response.
             status_code = response_body.status_code
             headers = response_body.headers
             response_body = response_body.body
-
+        
+        # if a tuple is used to instantiate
+        if isinstance(response_body, tuple):
+            if len(response_body) == 3:
+                headers = response_body[2]
+                status_code = response_body[1]
+                response_body = response_body[0]
+            if len(response_body) == 2:
+                status_code = response_body[1]
+                response_body = response_body[0]
+                headers = response_body.headers
+        
         if isinstance(status_code, str):
             # if status code came as a string, convert to int
             status_code = int(status_code.split(' ')[0])
-            
+
         self.status_code = status_code
-        
+
         if response_body is None:
             # make an empty response which is a status_str
             response_body = self.status
-            
+
         self.response_body = response_body
         self.add_header(headers)
-        
+
     @classmethod
     def create_from_handler(cls, handler_response):
         """A class factory from handler/callback response"""
@@ -101,20 +140,15 @@ class Response:
             return cls(handler_response)
         else:
             pass
-        cls('Incompatible response', 400)
-            
+        return cls('Incompatible response', 400)
+
     def add_cookie(self, name, value, secret=None, days=365):
-        dt = datetime.datetime.now() + datetime.timedelta(days=days)
-        fdt = dt.strftime('%a, %d %b %Y %H:%M:%S GMT')
-        secs = days * 86400
-        if secret:
-            value = encrypt(secret, value).decode(self.charset, 'ignore')
-        header_str = ('Set-Cookie', '{}={}; Expires={}; Max-Age={}; Path=/'.format(name, value, fdt, secs))
+        header_str = cookie_header(name=name, value=value, secret=secret, days=days)
         self.add_header(header_str)
-        
+
     def delete_cookie(self, name):
         self.add_cookie(name, '', days=0)
-        
+
     def add_header(self, headers):
         if isinstance(headers, str):
             # if headers was given as a string
@@ -130,12 +164,12 @@ class Response:
 
     def add_headers(self, headers):
         self.add_header(headers)
-        
-    @property    
+
+    @property
     def content_length_header(self):
         body = self.body[0]
         return [('Content-Length', str(len(body)))]
-    
+
     def handle_as_json(self):
         response_body = json.dumps(self.response_body).encode(self.charset, 'ignore')
         self.add_header( ('Content-Type',f'application/json;charset={self.charset}') )
@@ -159,11 +193,11 @@ class Response:
 
     def __repr__(self):
         # build the status string, using the standard helper
-        if not self._headers:   
+        if not self._headers:
             self._headers = [('Content-Type', f'text/html;charset={self.charset}')]
-                       
+
         return f'Response({self.body}, {self.status}, {self.headers}'
-    
+
     def __call__(self):
         return self.body, self.status, self.headers
 
@@ -178,24 +212,128 @@ class Response:
 
     @property
     def headers(self):
-        if not self._headers:   
+        if not self._headers:
             self._headers = [('Content-Type', f'text/html;charset={self.charset}')]
         return self._headers + self.content_length_header
-    
+
     @property
     def wsgi(self):
         return self.body, self.status, self.headers
+    
+class Session():
+    """session object class"""
+    def __init__(self, app, sessions_dir='./sessions'):
+        self.cookie_name = 'msession'
+        self._app = app
+        self._dir = sessions_dir
+        self._key = None
+        self.data = {}
+    
+    @property
+    def session_key(self):
+        """property returns a session key
+        if none, then use the randomly generated one
+        """
+        this_session_key = get_cookie(_app.environ, self.cookie_name)
+        if this_session_key:
+            self._key = this_session_key
+        else:
+            # generate a new key token
+            self._key = token_generator(20)
+        return self._key
+          
+    def commit(self):
+        """save the session to disk/cache"""
+        self._save(self.session_key)
+        
+    def new(self):
+        """purge old session if needed"""
+        self.purge()
+        self._key = token_generator()
+        self.data = {}
+        return self._key
+        
+    def connect(self):
+        self._load(self.session_key)
+        
+    def _session_fname(self, session_key):
+        """make a directory for sessions if it doesn't exist
+        and return filename"""
+        os.makedirs(self._dir, exist_ok=True)
+        return os.path.join(self._dir, str(session_key))
+    
+    def _load(self, session_key=None):
+        fname = self._session_fname(self.session_key)
+        if os.path.exists(fname):
+            with open(fname, 'rb') as fin:
+                self.data = pickle.load(fin)
+        else:
+            self.data = {}
+            self._save(session_key)
+                
+    def _save(self, session_key=None):
+        fname = self._session_fname(self.session_key)
+        with open(fname, 'wb') as fout:
+            pickle.dump(self.data, fout)
+        # commited to disk, inject the cookie (in case it is not already set)
+        self._inject_cookie()
+            
+    def _inject_cookie(self, env=None):
+        """inject a cookie into response environment
+        in app.wsgi, if a cookies changed a
+        cookie header will be added.
+        """
+        if env is None:
+            env = self._app.environ
+        # cookies are a string
+        cookies = env.get('HTTP_COOKIE')
+        # split cookies into list
+        if cookies:
+            cookies = cookies.split(';')
+        else:
+            cookies = []
+        # new cookies starts empty list
+        new_cookies = []
+        for cookie in cookies:
+            if self.cookie_name in cookie:
+                # skip existing session cookie
+                continue
+            new_cookies.append(cookie)
+                
+        # create our replacement cookie        
+        cookie = f'{self.cookie_name}={self.session_key}'
+        cookies.append(cookie)
+        env['HTTP_COOKIE'] = ';'.join(cookies)
+        
+    def purge(self):
+        if os.path.exists(self._session_fname(self.session_key)):
+            os.remove(self._session_fname(self.session_key))
+        self.data = {}
+    
 
+def redirect(url, code=None):
+    """leverages app object method"""
+    return _app.redirect(url, code=code)
+    
+def url_for(name, **kwargs):
+    """leverages app object method"""
+    return _app.url_for(name, **kwargs)
+
+
+def abort(*args, **kwargs):
+    """leverages app object method"""
+    return _app.abort(*args, **kwargs)
+    
 # local utilities
 def mimeguess(filename):
     """guess mimetype from filename, path, or url
-    
+
     Args:
         filename (str): a filename str to check
-        
+
     Returns:
         str: returns a mimetype guess for the file
-        
+
     Example:
        mimeguess('MyPicture.png') ==> 'image/png'
     """
@@ -205,11 +343,11 @@ def mimeguess(filename):
 def search_file(filename, *args):
     """look for a filename in several locations,
     return the actual filename that is found first or None
-    
+
     Args:
         filename (str): the file to search for existence
         *args (str): 0 or more directories to examine
-        
+
     Returns:
         str: the full path of the exisiting file or None
     """
@@ -218,33 +356,36 @@ def search_file(filename, *args):
         fname = filename[1:]
     # possible paths ACTUAL PATH, relative path to app, or template_dir
     # might want to make this more specific to avoid name conflict
-    
+
     paths = [filename, fname]
     for arg in args:
         paths.append(os.path.join(arg, fname))
-          
+
     for fn in paths:
         if os.path.exists(fn):
             return fn
     return None
 
-        
+def flash(*args, **kwargs):
+    """flash not implemented simply prints to the console"""
+    print(args, kwargs)
+
 def route_match(route, path):
     """check if a Mimimus route and env PATH_INFO match and
     parse the keyword arguments in the path.
-    
+
     Args:
         route (str): Mimimus route. Expects framework route syntax
         path (str): actual url PATH_INFO request
     Returns:
         bool, dict: True/False on route matching path, dict contains matching keyword args
-    
+
     Explanation:
        route is of the form "/thispage"
        or a route with a variable "/thispage/<varname>"
        or the SPECIAL path "/something/<mypath:path>" which captures
           an entire path in that position
-          
+
     Example:
         route_match('/hello','/hello') ==> True, {}
         route_match('/hello/<name>', '/hello/World') ==> True, {"name":"World"}
@@ -276,6 +417,8 @@ def route_match(route, path):
                     pathval += '/' + pparts[i]
                     i += 1
                 #todo, escape the pathval
+                if pathval.startswith('/'):
+                    pathval = pathval[1:]
                 kwargs[varname] = pathval
                 return True, kwargs
             else:
@@ -287,14 +430,14 @@ def route_match(route, path):
 
 def route_encode(route, **kwargs):
     """given a route and matching kwargs, return a URL
-    
+
     Args:
         route (str): a route string in route syntax
         **kwargs (keyword arguments): keywords should match varnames in route
-        
+
     Returns:
         str: returns the path from route and keyword args
-    
+
     Example:
         route = '/hello/<name>' kwargs={"name":"George"}
         route_encode('/hello/<name>', name="George") ==>
@@ -320,60 +463,60 @@ def route_encode(route, **kwargs):
             nparts.append(rp)
     url = '/'.join(nparts)
     return url
-            
-        
+
+
 def route_decode(route):
     """maybe I don't need this since I use route_match above"""
     kwargs={}
     return route, kwargs
-    
+
 def get_file(filename, *args, **kwargs):
     """get text file or return None, searches the likely paths to find the file
     if not found, return None
-    
+
     Args:
         filename (str): a filename to search
         *args (str): multiple directory candidates for file location first one to match wins
         **kwargs (keyword arguments): default ftype='text' also would use ftype='binary'
-    
+
     Example:
         get_file('index.html', 'templates', ftype='text')
         get_file('mylogo.gif', 'static/images', ftype='binary')
     """
     real_filename = search_file(filename, *args)
     file_contents = None
-    if real_filename: 
+    if real_filename:
         if 'bin' in kwargs.get('ftype',''):
             # binary file types
             with open(real_filename, 'rb') as fp:
                 file_contents = fp.read()
         else:
             with open(real_filename) as fp:
-                file_contents = fp.read()            
-            
+                file_contents = fp.read()
+
     return file_contents
 
 def get_text_file(filename, *args):
     """call get_file for a text file - looks for the file in multiple directorys
-    
+
     Args:
         filename (str) - a filename
         *args (str) - 0 or more directories to return a file from
-        
+
     Returns:
         str: the contents of the file or None
-        
+
     see "get_file"
     """
     return get_file(filename, *args)
 
 def get_file_size(filename, *args):
     """return the size of a filename, search likely paths
-    
+
     Args:
         filename (str) - a full pathname or relative path name of a file
         *args (str) - 0 or more paths under which to locate the file
-        
+
     Returns:
         int: the size in bytes of the file
     """
@@ -384,19 +527,19 @@ def get_file_size(filename, *args):
 
 def ext_check(pathname, ext_list):
     """check if pathname has an extension in the ext_list
-    
+
     Args:
         pathname (str): some pathname with file and extension
         ext_list (list of str): a list of extensions
-        
+
     Returns:
         bool: True if pathname ends in one of the extensions
-        
+
     Usage:
         x = 'MyPicture.png'
         if ext_check(x, ['jpg','png','jpeg']):
             print(x, "is a picture")
-        
+
     """
     for ext in ext_list:
         if pathname.lower().endswith(ext.lower()):
@@ -443,16 +586,16 @@ def get_cookies(environ):
             pass
         environ['minimus.cookies'] = (cookies, header)
         return cookies
-    
-    
+
+
 def get_cookie(environ, name, secret=None):
     """get a named cookie from the environment
-    
+
     Args:
         environ (dict): the WSGI environment which should contain any cookies
         name (str): the name of the cookie to retrieve
         secret (str): a server-side secret for signed cookies
-        
+
     Returns:
         str: the cookie value or None
     """
@@ -464,26 +607,26 @@ def get_cookie(environ, name, secret=None):
             value = decrypt(secret, morsel.value).decode('UTF-8', 'ignore')
         else:
             value = morsel.value
-    return value    
+    return value
 
 # our framework
 class Minimus:
     def __init__(self, app_file, template_dir="templates",
                  static_dir="static", quiet=False, charset='UTF-8'):
         """Minimus initialization
-        
+
         Args:
             app_file (str): required, typically '__main__' used to establish real OS path
             template_dir (str): path or relative path to template directory default="templates"
             static_dir (str): path or relative path to static files default="static"
             quiet (bool): used in development mode to see environmen on the console default=False
             charset (str): used for response encoding default='UTF-8'
-            
+
         Example:
             from minimus import Minimus
             app = Minimus(__name__)
         """
-        global _app_dir, _template_dir, _static_dir # module will need this
+        global _app, _app_dir, _template_dir, _static_dir, request # module will need this
         self.routes = None
 
         # make sure we know the current app's directory in self and module
@@ -493,76 +636,59 @@ class Minimus:
         self.charset = charset
         self.quiet = quiet
         self.app_dir = os.path.dirname(os.path.realpath(app_file))
+        _app = self
         _app_dir = self.app_dir
         self.static_dir = static_dir
         _static_dir = static_dir
         self.template_dir = template_dir
         _template_dir = self.template_dir
-        
+        self._request = Request({})
+        request = self.request
+
         # request "hook" can be replaced by external callback
         # a little ugly to do this way, but works
         self.not_found_html = self._not_found_html
-        self.before_request = self._before_request
-        self.after_request = self._after_request
-        
+        self.app_before_request = self._before_request
+        self.app_after_request = self._after_request
+
         # place holders
         self.environ = None
         self.start_response = None
 
+
+    @property
+    def request(self):
+        return self._request
+    
     def response_encode(self, x):
         if isinstance(x, str):
             return [x.encode(self.charset, 'ignore')]
         else:
             return [x]
         return x
-        
+
     def _before_request(self, environ):
         """this is a hookable callback for BEFORE REQUEST"""
         pass
-    
+
     def _after_request(self, environ):
         """this is a hookable callback for AFTER REQUEST"""
         pass
-    
-       
-    def make_response(self, status_code:int, headers=None):
-        """
-        make status string and  content-type WSGI compliant
-        returns the status string and content-type list/tuple
-        
-        Can be used in three ways examples below:
-        make_response(200) ==> 200 OK, [('Content-Type', 'text/html')]
-        make_response(200, 'text/css') ==> 200 OK [('Content-Type', 'text/css')]
-        make_response(503, [('Content-Type','text/html')])
-        """
-        # build the status string, using the standard helper
-        rstr = http.client.responses.get(status_code, 'UNKNOWN')
-        status_str = f"{status_code} {rstr}"
-        # if headers was NOT set, use default.
-        if headers is None:
-            headers = [('Content-Type', f'text/html;charset={self.charset}')]
-        
-        if isinstance(headers, str):
-            # if headers was given as a string
-            headers = [('Content-Type', headers)]
-            
-        return status_str, headers    
-    
+
     def abort(self, status_code:int, html_msg=None):
         """an abort response, well... could be anything"""
-        status_str, headers = self.make_response(status_code)
+        rstr = http.client.responses.get(status_code, 'UNKNOWN')
         if html_msg is None:
-            html_msg = f'<h1>{status_str}</h1>'
-        self.start_response(status_str, headers)
-        return [str.encode(html_msg)]
-    
+            html_msg = f'<h1>{status_code} {rstr}</h1>'
+        return Response(response_body=html_msg, status_code=status_code)
+
     def wsgi(self, environ, start_response):
         """The main WSGI application.  Supports WSGI standard can be exposed to
         work with external WSGI servers.
-        
+
         In the __main__ you could do this below.  Then Gunicorn can hook onto
         it  $ gunicorn app.wsgi -b 127.0.0.1:8000
-        
+
         # app.py
         app = Minimus(__name__)
         wsgi = app.wsgi
@@ -570,26 +696,40 @@ class Minimus:
         # save these to the object -may be needed by downstream methods
         self.start_response = start_response
         self.environ = environ
-        
+
         # debug shows environment on server console
         if self.debug:
             print("-"*50)
             print(environ)
 
         # before request -- can be "hooked" at application level
-        self.before_request(environ)
+        self._request = Request(environ)
+        pre_cookies = get_cookies(environ)
+        
+        # before request
+        self.app_before_request(environ)
 
         # route dispatcher
         path_info = environ.get('PATH_INFO')
         response_body, status_str, headers = self.render_to_response(path_info)
         
         # after request
-        self.after_request(environ)
+        self.app_after_request(environ)
         
+        # look for special session cookie injection
+        post_cookies = get_cookies(environ)
+        if post_cookies != pre_cookies:
+            # if msession is set
+            session_key = get_cookie(environ, 'msession')
+            if session_key:
+                header = cookie_header('msession', session_key)
+                headers.append(header)
+            
         # classic WSGI return
         start_response(status_str, headers)
         return iter(response_body)
-
+     
+        
     def add_route(self, route, handler, methods=None, name=None):
         """simple route addition to Mimimus application object
         :param route: - supports simple static routes (must begin with a slash) as well as named variables.
@@ -602,7 +742,7 @@ class Minimus:
         """
         if methods is None:
             methods = ['GET','POST']
-        if not isinstance(methods, list):
+        if not (isinstance(methods, list) or isinstance(methods, tuple)):
             raise ValueError('Minimus add_route route={} methods must be a list type')
         if self.routes is None:
             self.routes = []
@@ -622,7 +762,7 @@ class Minimus:
         app.not_found_html=my404
         """
         return '<h1>404 Not Found</h1>'
-    
+
     def run(self, host='127.0.0.1', port=5000, server='wsgiref', debug=False):
         """run() starts a "internal" server at host/port with server
         :param host: default=127.0.0.1, but can be '0.0.0.0' for serve to all
@@ -678,23 +818,23 @@ class Minimus:
         route = self.route_by_name(name)
         url = route_encode(route, **kwargs)
         return url
-    
+
     def render_to_response(self, path_info):
         """render a path and its response to a three tuple
         (content, status_str, headers)
         """
         request_method = self.environ.get('REQUEST_METHOD')
-        
+
         if not(self.routes):
             # IF NO ROUTES, then show server logo and exit
             response_body = "<pre>" + self.logo() + "</pre>"
             return Response(response_body).wsgi
-            
+
         # handle static files
         if self.static_dir in path_info:
             # search the usual locations for our file, return if exists
             local_fname = search_file(path_info, self.app_dir, self.static_dir, self.template_dir)
-            
+
             # interpret response by filename extension
             if local_fname:
                 # handle css and javascript status, headers
@@ -703,7 +843,7 @@ class Minimus:
                     response = Response(response_body, 200, 'text/css')
                 elif path_info.endswith('.js'):
                     response_body = get_text_file(path_info)
-                    response = Response(response_body, 200, 'text/javascript') 
+                    response = Response(response_body, 200, 'text/javascript')
                 elif ext_check(path_info, ['jpg', 'jpeg', 'gif', 'png', 'ico']):
                     # image rendering short circuits below to return
                     response_body = get_file(path_info, ftype='binary')
@@ -719,11 +859,11 @@ class Minimus:
                 # path_info file not found, respond 404
                 response_body = self.not_found_html()
                 response = Response(response_body, 404)
-            
+
             # return the response to the WSGI server
             return response.wsgi
-        
-        ### Handle routes    
+
+        ### Handle routes
         for route, handler, methods, _ in self.routes:
             # check for a route match and get any keyword arguments
             match, kwargs = route_match(route, path_info)
@@ -740,13 +880,18 @@ class Minimus:
                     return Response(response_body, 405).wsgi
 
         # no matching route found, respond 404
-        # status_str, headers = self.make_response(404)
         response_body = self.not_found_html()
         return Response(response_body, 404).wsgi
-    
-    
-    def redirect(self, path_info):
-        return self.render_to_response(path_info)
+
+
+    def redirect(self, url, code=None):
+        """redirects to url"""
+        if not code:
+            code = 303 if self.environ.get('SERVER_PROTOCOL') == "HTTP/1.1" else 302        
+        headers = [("Location", url)]
+        rstr = http.client.responses.get(code, 'UNKNOWN')
+        status_str = f"{code} {rstr}"
+        return "", status_str, headers
 
     def logo(self):
         """logo() - renders a simple text logo for the server"""
@@ -764,7 +909,7 @@ r"""
  -----------------------------------------
 """
         return logo_text
-    
+
     def route(self, url, methods=None, name=None):
         """route decorator ala Flask and Bottle
         url is mandatory and follows route rules and var naming
@@ -776,7 +921,7 @@ r"""
             self.add_route(url, f, methods=methods, name=name)
             return f
         return inner_decorator
-            
+
     def jsonify(self, datadict):
         # encode and return JSON, may have to get BSON for some encodings
         response_body = json.dumps(datadict)
@@ -784,8 +929,20 @@ r"""
         headers.append(('Content-Length', str(len(response_body))))
         return response_body, '200 OK', headers
     
-   
+    def before_request(self):
+        def inner_decorator(f):
+            self.app_before_request=f
+            return f
+        return inner_decorator
     
+    def after_request(self):
+        def inner_decorator(f):
+            self.app_after_request=f
+            return f
+        return inner_decorator
+
+
+
 def send_from_directory(filename, *args, **kwargs):
     """sends a file from directory(filename, args=list of directories to try, kwargs=keyword arguments)
     possible keyword arguments
@@ -799,18 +956,18 @@ def send_from_directory(filename, *args, **kwargs):
             mimetype = kwargs['mimetype']
         else:
             mimetype = mimeguess(filename)
-            
+
         headers = [('Content-Type', mimetype), ('Cache-Control', 'public, max-age=43200')]
         if kwargs.get('as_attachment'):
             headers.append(('Content-Disposition', f'attachment; filename={filename}'))
-            
+
         return Response(response_body, 200, headers)
-    
+
     response_body = f'named resource not found: <b>{filename}</b>'
     status = 400
-        
+
     return Response(response_body, status)
-                   
+
 
 def render_template(filename, **kwargs):
     """flexible jinja2 rendering of filename and kwargs"""
@@ -829,11 +986,14 @@ def render_template(filename, **kwargs):
         #real_file = search_file(filename, *args)
         #template_dir = os.path.dirname(real_file)
         file_content = get_text_file(filename, template_dir, static_dir)
-        
+
     if file_content:
         template = Environment(loader=FileSystemLoader([template_dir], followlinks=True)).from_string(file_content)
         #template = jinja2.Template(file_content)
-        return template.render(g=g, **kwargs)
+        if kwargs.get('g') is None:
+            # injecting g (global) object into the template
+            kwargs['g'] = dict(g)
+        return template.render(**kwargs)
     return "ERROR: render_template - Failed to find {}".format(filename)
 
 def render_html_file(filename, *args):
@@ -844,7 +1004,7 @@ def render_html_file(filename, *args):
     else:
         # if a different call is made
         file_content = get_text_file(filename, *args)
-    
+
     if file_content:
         return file_content
     else:
@@ -858,7 +1018,7 @@ class MultiDict(MutableMapping):
     An ordered dictionary that can have multiple values for each key.
     Adds the methods getall, getone, mixed, and add to the normal
     dictionary interface.
-    
+
     Class Attribution: BENJAMIN PETERSON (Python Paste) Thanks Ben!
     Only minor modifications were required.
     (https://github.com/cdent/paste/blob/master/paste/util/multidict.py)
@@ -1052,7 +1212,7 @@ class MultiDict(MutableMapping):
         for k, v in self._items:
             yield v
 
-from urllib.parse import parse_qsl            
+from urllib.parse import parse_qsl
 def parse_querystring(environ):
     """
     Parses a query string into a list like ``[(name, value)]``.
@@ -1061,7 +1221,7 @@ def parse_querystring(environ):
     You can pass the result to ``dict()``, but be aware that keys that
     appear multiple times will be lost (only the last value will be
     preserved).
-    
+
     Function Attribution: BENJAMIN PETERSON (Python Paste)
     (https://github.com/cdent/paste/blob/master/paste/util/multidict.py)
     """
@@ -1077,8 +1237,7 @@ def parse_querystring(environ):
     environ['paste.parsed_querystring'] = (parsed, source)
     return parsed
 
-import six
-import cgi
+
 def parse_formvars(environ, include_get_vars=True, encoding=None, errors=None):
     """Parses the request, returning a MultiDict of form variables.
     If ``include_get_vars`` is true then GET (query string) variables
@@ -1087,7 +1246,7 @@ def parse_formvars(environ, include_get_vars=True, encoding=None, errors=None):
     left as ``FieldStorage`` instances.
     If the request was not a normal form request (e.g., a POST with an
     XML body) then ``environ['wsgi.input']`` won't be read.
-    
+
     Function Attribution: BENJAMIN PETERSON (Python Paste)
     (https://github.com/cdent/paste/blob/master/paste/util/multidict.py)
     """
@@ -1172,14 +1331,14 @@ def xor_strings(s, t) -> bytes:
     else:
         # Python 3 bytes objects contain integer values in the range 0-255
         return bytes([a ^ b for a, b in zip(s, t)])
-    
+
 def __keypad(msg, key):
     """pad the key"""
     _key = key
     while len(_key) < len(msg):
         _key += _key
     return _key[:len(msg)]
-    
+
 # if you want decent security, use simple crypt
 #from simplecrypt import encrypt, decrypt
 
@@ -1232,7 +1391,6 @@ def decrypt(password, ciphertext, rounds=3):
             return 'ERROR'
     return plaintext
 
-
 def encode_tests():
     print("* encode_test")
     key = b'IamASecret'
@@ -1263,17 +1421,30 @@ def template_tests():
     print("* template tests")
     # look for a template where template_dir is a parameter
     content = render_template('ribbit/index.html', template_dir='templates', static_dir='static')
-    assert(not('404' in content))    
+    assert(not('404' in content))
     global _template_dir
     # a typical Minimus app will have the relative path 'templates'
     _template_dir = 'templates'
     content = render_template('page.html')
-    assert(not('404' in content)) 
-    
+    assert(not('404' in content))
+
     print("    tests pass")
     
+def session_test():
+    session_key = token_generator()
+    session = Session(session_key=session_key)
+    session.name = 'Slim Shady'
+    session.age = 28
+    assert(session.name == session['name'])
+    assert(session.age == 28)
+    session.purge()
+    print(" *** session tests passed")
+
 if __name__ == '__main__':
     # test route_encode
-    encode_tests()
-    file_tests()
-    template_tests()
+    #encode_tests()
+    #file_tests()
+    #template_tests()
+    #session_test()
+    print("passed all tests")
+    
