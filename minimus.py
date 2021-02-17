@@ -650,6 +650,8 @@ class Minimus:
         self.not_found_html = self._not_found_html
         self.app_before_request = self._before_request
         self.app_after_request = self._after_request
+        # receives template filters
+        self.template_filters = {}
 
         # place holders
         self.environ = None
@@ -750,8 +752,8 @@ class Minimus:
         for r in self.routes:
             if r == route:
                 return
-        # finally, add route
-        self.routes.append((route,handler,methods,name))
+        # finally, add route tuple
+        self.routes.append((route,handler, methods, name))
 
     def _not_found_html(self):
         """just return some text for the 404.  This can be replaced with app level function
@@ -915,29 +917,52 @@ r"""
         url is mandatory and follows route rules and var naming
         @app.route(/hello, methods=['GET'], name="hello")
         @app.route('/greet/<name>', name='greet_name')
+
+        If name is NOT set, it defaults to None...
+          instead, the route will look at the function it is wrapping
+          then the name will be set to the function's __name__
         """
         def inner_decorator(f):
-            #print(f.__name__, url, methods, name)
+            nonlocal name
+            # for some reason, have to trick python scope
+            if name is None:
+                name = f.__name__
             self.add_route(url, f, methods=methods, name=name)
             return f
         return inner_decorator
 
     def jsonify(self, datadict):
-        # encode and return JSON, may have to get BSON for some encodings
+        """jsonify(self, datadict) - return the datadict as
+        a JSON mimetype response
+        """
+        # encode and return JSON,
+        # may have to get BSON for some encodings
         response_body = json.dumps(datadict)
         headers = [('Content-Type',f'application/json;charset={self.charset}')]
         headers.append(('Content-Length', str(len(response_body))))
         return response_body, '200 OK', headers
     
     def before_request(self):
+        """app before_request (WSGI) function wrapper"""
         def inner_decorator(f):
             self.app_before_request=f
             return f
         return inner_decorator
     
     def after_request(self):
+        """app after_request (WSGI) function wrapper"""
         def inner_decorator(f):
             self.app_after_request=f
+            return f
+        return inner_decorator
+
+    def template_filter(self, name=None):
+        """jinja template_filter decorator"""
+        def inner_decorator(f):
+            nonlocal name
+            if name is None:
+                name = f.__name__
+            self.template_filters[name] = f
             return f
         return inner_decorator
 
@@ -970,13 +995,19 @@ def send_from_directory(filename, *args, **kwargs):
 
 
 def render_template(filename, **kwargs):
-    """flexible jinja2 rendering of filename and kwargs"""
+    """render_template(filename, **kwargs
+    provides flexible jinja2 rendering of filename and kwargs
+    
+    Args:
+        filename - filename of template file, looks in candidate directories
+        (by default, looking into ./templates but can be overridden with kwargs)
+    """
     template_dir = ''
-    static_dir =''
+    #static_dir =''
     if 'template_dir' in kwargs:
         template_dir = kwargs.get('template_dir')
-    if 'static_dir' in kwargs:
-        static_dir = kwargs.get('static_dir')
+    #if 'static_dir' in kwargs:
+    #    static_dir = kwargs.get('static_dir')
     if _template_dir:
         # Minimus apps go this way, they will know the default template dir
         file_content = get_text_file(filename, _template_dir, template_dir)
@@ -985,14 +1016,23 @@ def render_template(filename, **kwargs):
         # non-Minimus users go this way
         #real_file = search_file(filename, *args)
         #template_dir = os.path.dirname(real_file)
-        file_content = get_text_file(filename, template_dir, static_dir)
+        #file_content = get_text_file(filename, template_dir, static_dir)
+        file_content = get_text_file(filename, template_dir)
 
     if file_content:
-        template = Environment(loader=FileSystemLoader([template_dir], followlinks=True)).from_string(file_content)
-        #template = jinja2.Template(file_content)
+        # create a Jinja2 environment variable
+        environment = Environment(loader=FileSystemLoader([template_dir], followlinks=True))
+        # process template filters from app if any
+        for k,v in _app.template_filters.items():
+            environment.filters[k] = v
+        
+        # inject 'g' global
         if kwargs.get('g') is None:
             # injecting g (global) object into the template
             kwargs['g'] = dict(g)
+                
+        template = environment.from_string(file_content)
+        
         return template.render(**kwargs)
     return "ERROR: render_template - Failed to find {}".format(filename)
 
