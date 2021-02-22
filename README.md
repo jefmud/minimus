@@ -4,9 +4,13 @@ Minimus is an attempt to write my own Framework similar to Bottle, Flask, Pyrami
 
 I was inspired by Richard Feynman, the famous physicist. He wrote on his blackboard, “What I cannot create I do not understand."  I wanted to understand some of the deeper aspects of WSGI and frameworks.  So why not, as per Feynman, create a framework so I can make a claim to understand these.
 
-I have succeeded at some level, but can't recommend you use it just yet.
+So in homage to my Framework heros-- Armin Ronacher (Flask, Pallets), Chris Dent (Paste), Ben Darnell (Tornado), and Marcell Helkamp (Bottle) --I humbly submit my framework however poorly written, but paved with good intentions.
 
-Now, that I've spent some time creating one.  I never knew that these were way more simple than I had expected and that found it works pretty well.  I started writing a framework around Python Paste https://pypi.org/project/Paste/, I got a bit of confidence that I wasn't wasting my time!  But, got a little sad learning that the author Chris Dent was not actively developing it!  So after some mad refactoring I jump started the application object as a generic WSGI app.
+I have succeeded at some level, but can't recommend you use it for production just yet.  I decide to NOT make Minimus backward compatible to Python 2.7, it is past its end of support, so I feel justified!
+
+Like Marcell's Bottle project, I decided to keep Minimus as a single file.  A bit of a PEP 20 violation except the idea of simplicity is the self-contained nature.  I failed to make it actually self contained, since to be really useful it includes Jinja2 as an import.  If you choose to use a non WSGIRef server like Paste, Gevent, Waitress more imports will be required, be forwarned.
+
+Now, that I've spent some time creating Minimus.  I can say it is "simple" to me now.  I started writing a framework around Python Paste https://pypi.org/project/Paste/, I got a bit of confidence that I wasn't wasting my time!  But, got a little sad learning that the author Chris Dent was not actively developing it!  So after some mad refactoring I jump started the application object as a generic WSGI app.
 
 Quickly, I started cloning some of the Python decorator approaches of Flask and Bottle.  If you know Bottle or Flask, you will recognize that I cloned their decorator approach and some function names and approaches to solving templating. Of course, the Pallets project Jinja2 is (in my opinion) the absolute best of class templating engine.  I decided NOT to reinvent that wheel (for now).
 
