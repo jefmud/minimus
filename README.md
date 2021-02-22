@@ -6,7 +6,9 @@ I was inspired by Richard Feynman, the famous physicist. He wrote on his blackbo
 
 So in homage to my Framework heros-- Armin Ronacher (Flask, Pallets), Chris Dent (Paste), Ben Darnell (Tornado), and Marcell Helkamp (Bottle) --I humbly submit my framework however poorly written, but paved with good intentions.
 
-I have succeeded at some level, but can't recommend you use it for production just yet.  I decide to NOT make Minimus backward compatible to Python 2.7, it is past its end of support, so I feel justified!
+I have succeeded at some level, but can't recommend you use it for production just yet.  I haven't completed writing tests yet.  So "caveat emptor."
+
+Note: I decide to NOT make Minimus backward compatible to Python 2.7, it is past its end of support, so I feel justified!
 
 Like Marcell's Bottle project, I decided to keep Minimus as a single file.  A bit of a PEP 20 violation except the idea of simplicity is the self-contained nature.  I failed to make it actually self contained, since to be really useful it includes Jinja2 as an import.  If you choose to use a non WSGIRef server like Paste, Gevent, Waitress more imports will be required, be forwarned.
 
