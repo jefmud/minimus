@@ -47,18 +47,18 @@ request = None
 
 class JSObj(dict):
     """a utility class that mimics a JavaScript Object"""
-    def __getattr__(self, name):
-        if name in self:
-            return self[name]
+    def __getattr__(self, attr_name):
+        if attr_name in self:
+            return self[attr_name]
         else:
             return None
-    def __setattr__(self, name, value):
-        self[name] = value
-    def __delattr__(self, name):
-        if name in self:
-            del self[name]
+    def __setattr__(self, attr_name, attr_value):
+        self[attr_name] = attr_value
+    def __delattr__(self, attr_name):
+        if attr_name in self:
+            del self[attr_name]
         else:
-            raise AttributeError("No such attribute: " + name)
+            raise AttributeError("No such attribute: " + attr_name)
         
 # global level
 _app = None
@@ -315,9 +315,9 @@ def redirect(url, code=None):
     """leverages app object method"""
     return _app.redirect(url, code=code)
     
-def url_for(name, **kwargs):
+def url_for(route_name, **kwargs):
     """leverages app object method"""
-    return _app.url_for(name, **kwargs)
+    return _app.url_for(route_name, **kwargs)
 
 
 def abort(*args, **kwargs):
@@ -732,7 +732,7 @@ class Minimus:
         return iter(response_body)
      
         
-    def add_route(self, route, handler, methods=None, name=None):
+    def add_route(self, route, handler, methods=None, route_name=None):
         """simple route addition to Mimimus application object
         :param route: - supports simple static routes (must begin with a slash) as well as named variables.
         It also supports a special PATH catchment variable e.g. "/blog/<mypath:path>"
@@ -740,7 +740,7 @@ class Minimus:
         parameter is an environment variable.  The callback can also have OTHER paramerters that
         match the variables.
         :param methods: (list) - HTTP Methods supported, by default it supports ["GET","POST"]
-        :param name: - the name of the route used by app.url_for(name) routing
+        :param route_name: - the name of the route used by app.url_for(name) routing
         """
         if methods is None:
             methods = ['GET','POST']
@@ -753,7 +753,7 @@ class Minimus:
             if r == route:
                 return
         # finally, add route tuple
-        self.routes.append((route,handler, methods, name))
+        self.routes.append((route,handler, methods, route_name))
 
     def _not_found_html(self):
         """just return some text for the 404.  This can be replaced with app level function
@@ -805,19 +805,19 @@ class Minimus:
             serve(self.wsgi, host=host, port=port, _quiet=self.quiet)
 
 
-    def route_by_name(self, name):
+    def route_by_name(self, route_name):
         """given a route_name, return the route"""
         for route, callback, methods, _name in self.routes:
-            if name == _name:
+            if route_name == _name:
                 return route
         return None
 
-    def url_for(self, name, **kwargs):
+    def url_for(self, route_name, **kwargs):
         """kwargs are NOT handled yet
         suppose a route /edit_page/<idx> ==> edit_page(env, idx), name="edit"
         url_for("edit", 22) ==> /edit_page/22
         """
-        route = self.route_by_name(name)
+        route = self.route_by_name(route_name)
         url = route_encode(route, **kwargs)
         return url
 
@@ -912,7 +912,7 @@ r"""
 """
         return logo_text
 
-    def route(self, url, methods=None, name=None):
+    def route(self, url, methods=None, route_name=None):
         """route decorator ala Flask and Bottle
         url is mandatory and follows route rules and var naming
         @app.route(/hello, methods=['GET'], name="hello")
@@ -923,11 +923,11 @@ r"""
           then the name will be set to the function's __name__
         """
         def inner_decorator(f):
-            nonlocal name
+            nonlocal route_name
             # for some reason, have to trick python scope
-            if name is None:
-                name = f.__name__
-            self.add_route(url, f, methods=methods, name=name)
+            if route_name is None:
+                route_name = f.__name__
+            self.add_route(url, f, methods=methods, route_name=route_name)
             return f
         return inner_decorator
 
@@ -956,13 +956,13 @@ r"""
             return f
         return inner_decorator
 
-    def template_filter(self, name=None):
+    def template_filter(self, filter_name=None):
         """jinja template_filter decorator"""
         def inner_decorator(f):
-            nonlocal name
-            if name is None:
-                name = f.__name__
-            self.template_filters[name] = f
+            nonlocal filter_name
+            if filter_name is None:
+                filter_name = f.__name__
+            self.template_filters[filter_name] = f
             return f
         return inner_decorator
 
@@ -1030,6 +1030,12 @@ def render_template(filename, **kwargs):
         if kwargs.get('g') is None:
             # injecting g (global) object into the template
             kwargs['g'] = dict(g)
+            
+        # make url_for() function available at the template level
+        kwargs['url_for'] = url_for
+        
+        # make get_flashed_messages available at template level
+        kwargs['get_flashed_messages'] = None
                 
         template = environment.from_string(file_content)
         
