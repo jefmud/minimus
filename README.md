@@ -43,3 +43,20 @@ def index(environ):
     
 app.run(port=5000, host='127.0.0.1', server='paste')
 ```
+
+Minimus can support "Class based views."  This is currently developing and only (so far) supports GET and POST methods.
+
+```python
+from minimus import Minimus, ClassView
+
+app = Minimums(__name__)
+
+@app.route('/')
+class MyHomePage(ClassView):
+    def get(self, env):
+        return "Hello World!"
+    def post(self, env):
+        return "POST request to Hello World"
+        
+app.run()
+```
