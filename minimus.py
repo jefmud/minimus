@@ -101,6 +101,12 @@ class Response:
             status_code = response_body.status_code
             headers = response_body.headers
             response_body = response_body.body
+            
+        if isinstance(response_body, ClassView):
+            """Make a response from a class-based view"""
+            status_code = response_body.response.status_code
+            headers = response_body.response.headers
+            response_body = response_body.response.body
         
         # if a tuple is used to instantiate
         if isinstance(response_body, tuple):
@@ -176,6 +182,7 @@ class Response:
         return[response_body]
 
     def response_encode(self):
+        """encode our response to be a list of encoded strings"""
         if isinstance(self.response_body, str):
             return [self.response_body.encode(self.charset, 'ignore')]
         elif isinstance(self.response_body, list):
@@ -219,6 +226,39 @@ class Response:
     @property
     def wsgi(self):
         return self.body, self.status, self.headers
+    
+class ClassView:
+    """Minimus class view base type
+    
+    example -- using route decorator
+    
+    @app.route('/myview)
+    class MyView(ClassView):
+        def get(self, env):
+           return "Hello World!"
+    """
+    def __init__(self, env, **kwargs):
+        self.env = env
+        # possibly remove the environment since it is local to the ClassView
+        self.response = self.dispatcher(env, **kwargs)
+    
+    def dispatcher(self, env, **kwargs):
+        request_method = env.get('REQUEST_METHOD')
+        if request_method == 'GET':
+            return Response( self.get(env, **kwargs) )
+        if request_method == 'POST':
+            return Response( self.post(env, **kwargs) )
+            
+    def __len__(self):
+        return len(self.response.body)
+    
+    def get(self, env):
+        return Response("GET ClassView method not defined", 405)
+    def post(self):
+        return Response("POST ClassView method not defined", 405)
+    
+    def __repr__(self):
+        return self.response 
     
 class Session():
     """session object class"""
