@@ -42,9 +42,6 @@ from urllib.parse import parse_qsl
 # from pallets project, best of class template engine
 from jinja2 import Environment, FileSystemLoader
 
-# possible request class
-request = None
-
 class JSObj(dict):
     """a utility class that mimics a JavaScript Object"""
     def __getattr__(self, attr_name):
@@ -71,12 +68,7 @@ g = JSObj()
 
 def token_generator(size=12, chars=string.ascii_uppercase + string.digits):
     return ''.join(random.choice(chars) for _ in range(size))
-
-class Request:
-    def __init__(self, environ):
-        self.obj = JSObj(environ)
-        
-request = None
+    
 
 def cookie_header(name, value, secret=None, days=365, charset='utf-8'):
     """create a cookie-header string"""
@@ -88,8 +80,32 @@ def cookie_header(name, value, secret=None, days=365, charset='utf-8'):
     if secret:
         value = encrypt(secret, value).decode(charset, 'ignore')
     header_str = ('Set-Cookie', '{}={}; Expires={}; Max-Age={}; Path=/'.format(name, value, fdt, secs))
-    return header_str
-
+    return header_str       
+        
+# Request object class
+class Request:
+    """flask adapter"""
+    def __init__(self, env):
+        self._env = env
+        self.data = JSObj()
+        self.args = MultiDict()
+        self.form = MultiDict()
+        self.files = MultiDict()
+        self.json = MultiDict()
+        
+        self.fields = {}
+        if env:
+            self.fields = parse_formvars(env)
+            
+        for k,v in self.fields.items():
+            self.data[k] = v
+            self.form[k] = v
+            
+        self.method = env.get('REQUEST_METHOD')
+        self.request = env.get('PATH_INFO')
+        
+        
+        
 # important Response object
 class Response:
     def __init__(self, response_body=None, status_code=200, headers=None, charset='UTF-8'):
@@ -666,7 +682,7 @@ class Minimus:
             from minimus import Minimus
             app = Minimus(__name__)
         """
-        global _app, _app_dir, _template_dir, _static_dir, request # module will need this
+        global _app, _app_dir, _template_dir, _static_dir # module will need this
         self.routes = None
 
         # make sure we know the current app's directory in self and module
@@ -682,8 +698,6 @@ class Minimus:
         _static_dir = static_dir
         self.template_dir = template_dir
         _template_dir = self.template_dir
-        self._request = Request({})
-        request = self.request
 
         # request "hook" can be replaced by external callback
         # a little ugly to do this way, but works
@@ -696,12 +710,8 @@ class Minimus:
         # place holders
         self.environ = None
         self.start_response = None
+        self.request = None
 
-
-    @property
-    def request(self):
-        return self._request
-    
     def response_encode(self, x):
         if isinstance(x, str):
             return [x.encode(self.charset, 'ignore')]
@@ -717,6 +727,10 @@ class Minimus:
         """this is a hookable callback for AFTER REQUEST"""
         pass
 
+    def app_middlewares(self, environ, start_response):
+        """ This is were the middleware goes """
+        return environ, start_response
+    
     def abort(self, status_code:int, html_msg=None):
         """an abort response, well... could be anything"""
         rstr = http.client.responses.get(status_code, 'UNKNOWN')
@@ -745,12 +759,14 @@ class Minimus:
             print(environ)
 
         # before request -- can be "hooked" at application level
-        self._request = Request(environ)
         pre_cookies = get_cookies(environ)
         
         # before request
         self.app_before_request(environ)
 
+        # app middlewares
+        self.app_middlewares(eviron, start_response)
+        
         # route dispatcher
         path_info = environ.get('PATH_INFO')
         response_body, status_str, headers = self.render_to_response(path_info)
@@ -1476,6 +1492,21 @@ def decrypt(password, ciphertext, rounds=3):
         except:
             return 'ERROR'
     return plaintext
+
+def csrf_token(session:Session):
+    """create a csrf_token and store in a session"""
+    session.connect()
+    token = token_generator(32, chars=string.ascii_letters + string.digits)
+    session.data['csrf_token'] = token
+    session.commit()
+    return token
+
+def validate_csrf(session:Session, csrf_token):
+    """get the csrf_token from the session and compare the one from the form"""
+    session.connect()
+    if session.data.get('csrf_token') == csrf_token:
+        return True
+    return False
 
 def encode_tests():
     print("* encode_test")
