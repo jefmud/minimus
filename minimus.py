@@ -765,7 +765,7 @@ class Minimus:
         self.app_before_request(environ)
 
         # app middlewares
-        self.app_middlewares(eviron, start_response)
+        self.app_middlewares(environ, start_response)
         
         # route dispatcher
         path_info = environ.get('PATH_INFO')
