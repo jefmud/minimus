@@ -7,22 +7,22 @@
 #    by Jeff et. al.
 #    MIT License
 #
-#     Some code is influenced and "borrowed"
+#     Some code is influenced and borrowed
 #     from Python Paste (under MIT license)
 #       by Chris Dent (https://pypi.org/project/Paste/)
 #
 #       and
 #
 #    Jinja2 best of class Templating
-#     from the Pallets project
-#       by Armin Ronacher (BSD License)
-#     (https://palletsprojects.com/p/jinja/)
+#     from the Pallets project (https://palletsprojects.com/p/jinja/)
 #
 #    Other Python standard libraries included
 #    also, waitress and gevent are excellent
 #    choices for alternate WSGI servers
 #
 ###########################################
+VERSION = '0.0.1'
+
 #from functools import wraps
 import base64
 import cgi
@@ -103,7 +103,6 @@ class Request:
             
         self.method = env.get('REQUEST_METHOD')
         self.request = env.get('PATH_INFO')
-        
         
         
 # important Response object
@@ -259,11 +258,16 @@ class ClassView:
         self.response = self.dispatcher(env, **kwargs)
     
     def dispatcher(self, env, **kwargs):
+        """dispatcher for the class view GET, POST, PUT, DELETE, etc"""
         request_method = env.get('REQUEST_METHOD')
         if request_method == 'GET':
             return Response( self.get(env, **kwargs) )
         if request_method == 'POST':
             return Response( self.post(env, **kwargs) )
+        if request_method == 'PUT':
+            return Response( self.put(env, **kwargs) )
+        if request_method == 'DELETE':
+            return Response( self.delete(env, **kwargs) )
             
     def __len__(self):
         return len(self.response.body)
@@ -272,15 +276,36 @@ class ClassView:
         return Response("GET ClassView method not defined", 405)
     def post(self):
         return Response("POST ClassView method not defined", 405)
+    def put(self):
+        return Response("PUT ClassView method not defined", 405)
+    def delete(self):
+        return Response("DELETE ClassView method not defined", 405)
     
     def __repr__(self):
         return self.response 
     
+class FieldData:
+    """helper class for FormData"""
+    def __init__(self, value):
+        self.data = value
+    def __repr__(self):
+        return self.data
+        
+class FormData:
+    """helper class for form data"""
+    def __init__(self, env):
+        fields = parse_formvars(env)
+        for k,v in fields.items():
+            self.__setattr__(k,FieldData(v))    
+            
 class Session():
-    """session object class"""
-    def __init__(self, app, sessions_dir='./sessions'):
-        self.cookie_name = 'msession'
+    """session object class
+    __init__() - 'app' object is the minimum required to create a session
+    
+    """
+    def __init__(self, app, sessions_dir='./sessions', cookie_name='msession'):
         self._app = app
+        self.cookie_name = cookie_name
         self._dir = sessions_dir
         self._key = None
         self.data = {}
@@ -299,7 +324,9 @@ class Session():
         return self._key
           
     def commit(self):
-        """save the session to disk/cache"""
+        """save the session to disk/cache, could be called after every request.
+        you would also probably NOT want to call this in 'after_request', for efficiency
+        """
         self._save(self.session_key)
         
     def new(self):
@@ -310,6 +337,10 @@ class Session():
         return self._key
         
     def connect(self):
+        """connect to the session - good practice to call this before session usage,
+        you would probably not want to call this in "before_request", for efficiency
+        since it slows down the request
+        """
         self._load(self.session_key)
         
     def _session_fname(self, session_key):
@@ -439,21 +470,31 @@ def route_match(route, path):
     Explanation:
        route is of the form "/thispage"
        or a route with a variable "/thispage/<varname>"
-       or the SPECIAL path "/something/<mypath:path>" which captures
-          an entire path in that position
+       or the SPECIAL path "/something/<path:mypath>" which captures
+          an entire path in that position.  <path:mypath> is a GREEDY capture
+          and will capture the entire path following.
 
     Example:
         route_match('/hello','/hello') ==> True, {}
         route_match('/hello/<name>', '/hello/World') ==> True, {"name":"World"}
         route_match('/<blogname>/<entryname>', '/Wonderblog/I-am-the-Walrus')
             ==> True, {"blogname":"WonderBlog", "entryname":"I-am-the-Walrus"}
+            
+        # NOTE this works
+        route_match('/<path:mypath>', '/Wonderblog/I-am-the-Walrus/')
+            ==> True, {"mypath":"Wonderblog/I-am-the-Walrus/"}
+            
+        # NOTE this will not work because the path is GREEDY and will capture
+        # all the path.  I will fix this in the future
+        route_match('/<path:mypath>/edit', '/Wonderblog/I-am-the-Walrus/edit')
+            ==> True, {"mypath":"Wonderblog/I-am-the-Walrus/edit"}
     """
     # explode the route and path parts
     rparts = route.split('/')
     pparts = path.split('/')
     # return keyword arguments as kwargs
     kwargs = {}
-    if not(':path' in route) and (len(rparts) != len(pparts)):
+    if not('path:' in route) and (len(rparts) != len(pparts)):
         return False, kwargs
     for idx, rp in enumerate(rparts):
         # handle variable in the path
@@ -465,8 +506,8 @@ def route_match(route, path):
                 # malformed, fail
                 return False, kwargs
             varname = rp[b1+1:b2]
-            if ':path' in varname:
-                varname = varname.replace(':path','')
+            if 'path:' in varname:
+                varname = varname.replace('path:','')
                 i = idx
                 pathval = ""
                 while i < len(pparts):
@@ -499,7 +540,13 @@ def route_encode(route, **kwargs):
         route_encode('/hello/<name>', name="George") ==>
             /hello/George
     """
-    rparts = route.split('/')
+    # explode the route and path parts
+    try:
+        rparts = route.split('/')
+    except Exception as ex:
+        print(ex)
+        return "_ERROR_in_route_encode_"
+    
     nparts = []
     for rp in rparts:
         if '<' in rp:
@@ -684,6 +731,9 @@ class Minimus:
         """
         global _app, _app_dir, _template_dir, _static_dir # module will need this
         self.routes = None
+        
+        # minimus config
+        self.config = JSObj()        
 
         # make sure we know the current app's directory in self and module
         self.secret_key = None
@@ -697,8 +747,8 @@ class Minimus:
         self.static_dir = static_dir
         _static_dir = static_dir
         self.template_dir = template_dir
-        _template_dir = self.template_dir
-
+        _template_dir = self.template_dir        
+        
         # request "hook" can be replaced by external callback
         # a little ugly to do this way, but works
         self.not_found_html = self._not_found_html
@@ -728,7 +778,7 @@ class Minimus:
         pass
 
     def app_middlewares(self, environ, start_response):
-        """ This is were the middleware goes """
+        """ This is were the middleware overrides will happen"""
         return environ, start_response
     
     def abort(self, status_code:int, html_msg=None):
@@ -827,6 +877,9 @@ class Minimus:
         :param port: default=5000
         :param server: default='wsgiref' other servers supported 'paste','waitress','gevent'
         """
+        if not server in ['wsgiref','paste','waitress','gevent']:
+            raise ValueError('Minimus run server={} not supported'.format(server))
+        
         print(self.logo())
 
         self.debug = debug
@@ -953,6 +1006,7 @@ class Minimus:
 
     def logo(self):
         """logo() - renders a simple text logo for the server"""
+        year = datetime.datetime.now().year
         logo_text=\
 r"""
   __  __ _       _
@@ -963,10 +1017,11 @@ r"""
  |_|  |_|_|_| |_|_|_| |_| |_|\__,_|___/
 ------------------------------------------
  A Minimal Python Framework
- (C) 2021 Jeff et. al.
+ (C) {} Jeff et. al. 
+ Version {}, (use grant MIT License)
  -----------------------------------------
 """
-        return logo_text
+        return logo_text.format(year, VERSION)
 
     def route(self, url, methods=None, route_name=None):
         """route decorator ala Flask and Bottle
@@ -1012,6 +1067,13 @@ r"""
             return f
         return inner_decorator
 
+#def app_middleware(self):
+#        """app_middleware() - WSGI middleware function wrapper"""
+#        def inner_decorator(f):
+#            self.app_middleware=f
+#            return f
+#        return inner_decorator
+    
     def template_filter(self, filter_name=None):
         """jinja template_filter decorator"""
         def inner_decorator(f):
@@ -1022,6 +1084,22 @@ r"""
             return f
         return inner_decorator
 
+    # config
+    def config_from_file(self, config_file):
+        """config from file"""
+        with open(config_file) as fp:
+            data = fp.read()
+            
+        lines = data.split('\n')
+        for line in lines:
+            parts = line.split('=')
+            if len(parts) == 2:
+                parts[0] = parts[0].strip()
+                parts[1] = parts[1].strip()
+                # strip off trailing and leading quotes
+                if parts[1][0]  == '"' or parts[1][0] == "'":
+                    parts[1] = parts[1][1:-1]
+                self.config[parts[0].strip()] = parts[1]   
 
 
 def send_from_directory(filename, *args, **kwargs):
@@ -1121,7 +1199,7 @@ class MultiDict(MutableMapping):
     Adds the methods getall, getone, mixed, and add to the normal
     dictionary interface.
 
-    Class Attribution: BENJAMIN PETERSON (Python Paste) Thanks Ben!
+    Class Attribution: BENJAMIN PETERSON and Miro Hrončok (Python Paste) Thanks Ben and Miro!
     Only minor modifications were required.
     (https://github.com/cdent/paste/blob/master/paste/util/multidict.py)
     """
@@ -1324,7 +1402,7 @@ def parse_querystring(environ):
     appear multiple times will be lost (only the last value will be
     preserved).
 
-    Function Attribution: BENJAMIN PETERSON (Python Paste)
+    Function Attribution: BENJAMIN PETERSON and Miro Hrončok (Python Paste)
     (https://github.com/cdent/paste/blob/master/paste/util/multidict.py)
     """
     source = environ.get('QUERY_STRING', '')
@@ -1349,7 +1427,7 @@ def parse_formvars(environ, include_get_vars=True, encoding=None, errors=None):
     If the request was not a normal form request (e.g., a POST with an
     XML body) then ``environ['wsgi.input']`` won't be read.
 
-    Function Attribution: BENJAMIN PETERSON (Python Paste)
+    Function Attribution: BENJAMIN PETERSON and Miro Hrončok (Python Paste)
     (https://github.com/cdent/paste/blob/master/paste/util/multidict.py)
     """
     source = environ['wsgi.input']
@@ -1441,8 +1519,6 @@ def __keypad(msg, key):
         _key += _key
     return _key[:len(msg)]
 
-# if you want decent security, use simple crypt
-#from simplecrypt import encrypt, decrypt
 
 def _encrypt(password, plaintext):
     """this is a workalike of simplecrypt.encrypt()
@@ -1508,60 +1584,8 @@ def validate_csrf(session:Session, csrf_token):
         return True
     return False
 
-def encode_tests():
-    print("* encode_test")
-    key = b'IamASecret'
-    string = b'Santa Claus is coming to town!'
-    encval = encrypt(key, string)
-    decval = decrypt(key, encval)
-    assert(string!=encval)
-    assert(string==decval)
-    assert(route_encode('/edit') == '/edit')
-    assert(route_encode('/edit/<page>', page=1) == '/edit/1')
-    assert(route_encode('/page/<page>/delete', page=1) == '/page/1/delete')
-    assert(route_encode('/page/<page>/<obj>', page=1, obj=2) == '/page/1/2')
-    print("  tests pass")
-
-def file_tests():
-    print("* file tests")
-    app_dir = real_path(__name__)
-    templates_dir = os.path.join(app_dir, 'templates')
-    content = get_file('page.html', app_dir, templates_dir)
-    assert(content)
-    content = get_file('page.html', 'templates')
-    assert(content)
-    content = get_file('img/cupcake.png','static', ftype='binary')
-    assert(content)
-    print("  tests pass")
-
-def template_tests():
-    print("* template tests")
-    # look for a template where template_dir is a parameter
-    content = render_template('ribbit/index.html', template_dir='templates', static_dir='static')
-    assert(not('404' in content))
-    global _template_dir
-    # a typical Minimus app will have the relative path 'templates'
-    _template_dir = 'templates'
-    content = render_template('page.html')
-    assert(not('404' in content))
-
-    print("    tests pass")
-    
-def session_test():
-    session_key = token_generator()
-    session = Session(session_key=session_key)
-    session.name = 'Slim Shady'
-    session.age = 28
-    assert(session.name == session['name'])
-    assert(session.age == 28)
-    session.purge()
-    print(" *** session tests passed")
 
 if __name__ == '__main__':
-    # test route_encode
-    #encode_tests()
-    #file_tests()
-    #template_tests()
-    #session_test()
-    print("passed all tests")
-    
+    mini = Minimus('__main__')
+    print(mini.logo())
+    print("Minimus is a web framework for Python 3.6+")
