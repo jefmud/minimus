@@ -4,7 +4,7 @@ Minimus is an attempt to write my own Framework similar to Bottle, Flask, Pyrami
 
 I was inspired by Richard Feynman, the famous physicist. He wrote on his blackboard, “What I cannot create I do not understand."  I wanted to understand some of the deeper aspects of WSGI and frameworks.  So why not, as per Feynman, create a framework so I can make a claim to understand these.
 
-So in homage to my Framework heros-- Armin Ronacher (Flask, Pallets), Chris Dent (Paste), Ben Darnell (Tornado), and Marcell Helkamp (Bottle) --I humbly submit my framework however poorly written, but paved with good intentions.
+So in homage to my Framework heros-- Armin Ronacher and the Pallets Project (Flask and Pallets ecosystem), Ben Peterson (Paste), Ben Darnell (Tornado), and Marcell Helkamp (Bottle) --I humbly submit my framework however poorly written, but paved with good intentions.
 
 I have succeeded at some level, but can't recommend you use it for production just yet.  I haven't completed writing tests yet.  So "caveat emptor."
 
@@ -44,7 +44,7 @@ def index(environ):
 app.run(port=5000, host='127.0.0.1', server='paste')
 ```
 
-Minimus can support "Class based views."  This is currently developing and only (so far) supports GET and POST methods.
+Minimus can support "Class based views."  This is currently developing and only (so far) supports GET, POST, PUT, and DELETE methods. If you wanted a Pony, then get a Pony.
 
 ```python
 from minimus import Minimus, ClassView
