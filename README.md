@@ -44,6 +44,8 @@ def index(environ):
 app.run(port=5000, host='127.0.0.1', server='paste')
 ```
 
+## Class Based Views
+
 Minimus can support "Class based views."  This is currently developing and only (so far) supports GET, POST, PUT, and DELETE methods. If you wanted a Pony, then get a Pony.
 
 ```python
@@ -92,3 +94,50 @@ app.run()
 ```
 
 Minimus is pretty capable of serving as your web framework.
+
+## Forms Handling
+
+We can handle forms very similar to Bottle and Flask.
+
+```python
+from minimus import Minimus, parse_formvars, redirect, parse_querystring
+
+app = Minimus(__name__)
+
+simple_form = """
+<h1>My Form</h1>
+<form method="post">
+  Name<br />
+  <input name="name" type="text"><br />
+  
+  Enter your message<br />
+  <textarea name="message"></textarea><br />
+  
+  <input type="submit">
+</form>
+"""
+
+@app.route('/')
+def index(environ):
+  return """<h1>Index</h1>
+  <a href="/form">Send a Message</a><br>
+  """
+@app.route('/hello')
+def hello(environ):
+    args = parse_querystring(environ)
+    return f"<h1>Hello</h1><p>Thanks for for the message:\n {args}.</p>"
+    
+@app.route('/form', methods=['GET', 'POST'])
+def myform(environ):
+    if environ.get('REQUEST_METHOD') == 'POST':
+        fields = parse_formvars(environ)
+        name = fields.get('name')
+        message = fields.get('message')
+        print(f"{name} said {message}")
+        return redirect(f'/hello?name={name}&message={message}')
+        
+    return simple_form
+    
+app.run(host='0.0.0.0', port=5000)
+```
+        
