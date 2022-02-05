@@ -60,3 +60,33 @@ class MyHomePage(ClassView):
         
 app.run()
 ```
+
+## Support for Jinja2 templates
+
+Minimus also supports Jinja2 templates, much like flask.  If we had a template file like this
+
+```html
+<!DOCTYPE html>
+<html>
+    <body>
+        <h1>Hello There {{ name }}</h1>
+        <p>Minimus is ready and waiting!</p>
+    </body>
+</html>
+```
+
+And we had a program like this...
+
+```python
+from minimus import Minimus, render_template
+
+app = Minimus(__name__)
+
+@app.route('/<name>')
+def index(env, name):
+    return render_template('index.html', name=name)
+    
+app.run()
+```
+
+Minimus is pretty capable of serving as your web framework.
