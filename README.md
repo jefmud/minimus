@@ -63,7 +63,9 @@ app.run()
 
 ## Support for Jinja2 templates
 
-Minimus also supports Jinja2 templates, much like flask.  If we had a template file like this
+Minimus also supports Jinja2 templates, much like Flask.  It was designed in a similar fashion to support keyword arguments like `name`.
+
+If we had a template file like this...
 
 ```html
 <!DOCTYPE html>
