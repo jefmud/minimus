@@ -18,6 +18,8 @@ Quickly, I started cloning some of the Python decorator approaches of Flask and 
 
 So someone who codes Flask or Bottle could do some minor refactoring and have their app running on Minimus.
 
+The "environ" MUST be passed into to every view.  The "environ" or WSGI environment is essential to a webapp and with each request will pass to the function.  That was a design choice that I feel Bottle and Flask are missing.  Django and Pyramid get it, but use a "Request" object to abstract it.  One of my friends suggested I use "WebOb" library, maybe they were correct... but this works too.
+
 ```python
 from minimus import Minimus
 
