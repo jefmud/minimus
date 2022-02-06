@@ -6,7 +6,7 @@ I was inspired by **Richard Feynman**, the famous physicist. He wrote on his bla
 
 *I set forth on a rainy Saturday and a few cups of coffee to have a bit of fun with writing this...*
 
-So in homage to my Framework heros-- **Armin Ronacher and the Pallets Project** (Flask and Pallets ecosystem), **Chris Dent and Ben Peterson** (Paste), **Ben Darnell** (Tornado), and especially **Marcell Helkamp** (Bottle) --I humbly submit my framework however poorly written, but paved with good intentions.
+So in homage to my Framework heros-- **Armin Ronacher and the Pallets Project** (Flask, Werkzeug, and Pallets ecosystem), **Chris Dent and Ben Peterson** (Paste), **Ben Darnell** (Tornado), and especially **Marcell Helkamp** (Bottle) --I humbly submit my framework however poorly written, but paved with good intentions.
 
 I have succeeded at some level, but can't recommend you use it for production just yet.  I haven't completed writing tests yet.  So "caveat emptor."
 
