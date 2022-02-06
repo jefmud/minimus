@@ -93,11 +93,11 @@ def index(env, name):
 app.run()
 ```
 
-Minimus is pretty capable of serving as your web framework.
+Minimus is pretty capable of serving as your web framework.  If this is looking like Flask, yes definitely an homage.
 
 ## Forms Handling
 
-We can handle forms very similar to Bottle and Flask.
+We can handle forms very similar to Bottle and Flask.  This is going to look less like Flask and more like Pyramid and it's heritage of Paste.
 
 ```python
 from minimus import Minimus, parse_formvars, redirect, parse_querystring
@@ -141,3 +141,4 @@ def myform(environ):
 app.run(host='0.0.0.0', port=5000)
 ```
         
+So that's it for now.  I will improve the documentation and feel free to tear it apart, cut-and-paste, etc.  There are no guarantees you will see more documentation unless I get motivated.
