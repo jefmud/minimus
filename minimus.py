@@ -21,7 +21,7 @@
 #    choices for alternate WSGI servers
 #
 ###########################################
-VERSION = '0.0.1'
+VERSION = '0.0.4'
 
 #from functools import wraps
 import base64
@@ -34,7 +34,6 @@ import mimetypes
 import os
 import pickle
 import random
-import six
 import string
 import sys
 from urllib.parse import parse_qsl
@@ -63,8 +62,10 @@ _app_dir = None
 _static_dir = None
 _template_dir = None
 
-# A global object
+# The global object, available to all routes, templates, etc.
 g = JSObj()
+# the global session object
+session = JSObj()
 
 def token_generator(size=12, chars=string.ascii_uppercase + string.digits):
     return ''.join(random.choice(chars) for _ in range(size))
@@ -78,35 +79,35 @@ def cookie_header(name, value, secret=None, days=365, charset='utf-8'):
     fdt = dt.strftime('%a, %d %b %Y %H:%M:%S GMT')
     secs = days * 86400
     if secret:
-        value = encrypt(secret, value).decode(charset, 'ignore')
+        if isinstance(secret, str):
+            b = secret.encode(charset)  # bytes
+        else:
+            b = secret
+        value = encrypt(b, value).decode(charset, 'ignore')
     header_str = ('Set-Cookie', '{}={}; Expires={}; Max-Age={}; Path=/'.format(name, value, fdt, secs))
     return header_str       
         
 # Request object class
-class Request:
-    """flask adapter"""
+class Request(JSObj):
+    """
+    flask adapter, a very imcomplete clone of the Flask request object
+    I will add more as I need them.
+    """
     def __init__(self, env):
-        self._env = env
-        self.data = JSObj()
-        self.args = MultiDict()
-        self.form = MultiDict()
-        self.files = MultiDict()
-        self.json = MultiDict()
-        
-        self.fields = {}
-        if env:
-            self.fields = parse_formvars(env)
-            
-        for k,v in self.fields.items():
-            self.data[k] = v
-            self.form[k] = v
-            
-        self.method = env.get('REQUEST_METHOD')
-        self.request = env.get('PATH_INFO')
-        
+
+        self.method = env['REQUEST_METHOD']
+        self.form = parse_formvars(env)
+        self.cookies = get_cookies(env)
+        self.args = parse_querystring(env)
+        self.path = env['PATH_INFO']
+        self.is_json = self.path.endswith('.json')
         
 # important Response object
 class Response:
+    """all WSGI requires a Response object
+       
+       This class wraps the response body and headers
+    """
     def __init__(self, response_body=None, status_code=200, headers=None, charset='UTF-8'):
         self.charset = charset
         self._headers = []
@@ -167,6 +168,10 @@ class Response:
         header_str = cookie_header(name=name, value=value, secret=secret, days=days)
         self.add_header(header_str)
 
+    def set_cookie(self, name, value, secret=None, days=365):
+        # to be compatible with flask
+        self.add_cookie(name, value, secret, days)
+        
     def delete_cookie(self, name):
         self.add_cookie(name, '', days=0)
 
@@ -298,25 +303,34 @@ class FormData:
         for k,v in fields.items():
             self.__setattr__(k,FieldData(v))    
             
-class Session():
+class Session:
     """session object class
     __init__() - 'app' object is the minimum required to create a session
     
+    example -- using session
+    at the top of your app.py file include the line
+    session = Session(app)
+    
     """
-    def __init__(self, app, sessions_dir='./sessions', cookie_name='msession'):
+    def __init__(self, app, sessions_dir='./sessions', cookie_name='msession', mode='file', days=365):
         self._app = app
-        self.cookie_name = cookie_name
+        self._cookie_name = cookie_name
         self._dir = sessions_dir
         self._key = None
-        self.data = {}
+        self.data = {} # to ensure compatibility with original version
+        if mode not in ['file', 'memory']:
+            raise ValueError("ERROR: Session mode must be 'file' or 'memory'")
+        self._mode = mode # file, memory, or memcached (FUTURE)
+        self._sessions = {}
     
     @property
     def session_key(self):
         """property returns a session key
         if none, then use the randomly generated one
         """
-        this_session_key = get_cookie(_app.environ, self.cookie_name)
+        this_session_key = get_cookie(_app.environ, self._cookie_name)
         if this_session_key:
+            # if there is a session key, use it
             self._key = this_session_key
         else:
             # generate a new key token
@@ -350,52 +364,73 @@ class Session():
         return os.path.join(self._dir, str(session_key))
     
     def _load(self, session_key=None):
+        """load the session from disk/cache"""
         fname = self._session_fname(self.session_key)
-        if os.path.exists(fname):
-            with open(fname, 'rb') as fin:
-                self.data = pickle.load(fin)
+        if session_key is None:
+            session_key = self.session_key
+        if self._mode == 'file':
+            if os.path.exists(fname):
+                with open(fname, 'rb') as fin:
+                    self.data = pickle.load(fin)
+            else:
+                self.data = {}
+                self._save(session_key)
+        elif self._mode == 'memory':
+            if session_key in self._sessions:
+                self.data = self._sessions[session_key]
+            else:
+                self._sessions[session_key] = {}
         else:
-            self.data = {}
-            self._save(session_key)
+            raise Exception(f"unknown mode {self._mode}")
                 
     def _save(self, session_key=None):
+        """save the session to disk/cache"""
         fname = self._session_fname(self.session_key)
-        with open(fname, 'wb') as fout:
-            pickle.dump(self.data, fout)
-        # commited to disk, inject the cookie (in case it is not already set)
+        if session_key is None:
+            session_key = self.session_key 
+        if self._mode == 'file':
+            with open(fname, 'wb') as fout:
+                pickle.dump(self.data, fout)
+        # inject the cookie (in case it is not already set)
         self._inject_cookie()
-            
-    def _inject_cookie(self, env=None):
+        
+    def _inject_cookie(self, env=None, max_age=None):
         """inject a cookie into response environment
         in app.wsgi, if a cookies changed a
         cookie header will be added.
         """
         if env is None:
             env = self._app.environ
-        # cookies are a string
+            
+        # cookies are a string from the enviroment
         cookies = env.get('HTTP_COOKIE')
         # split cookies into list
         if cookies:
             cookies = cookies.split(';')
         else:
             cookies = []
-        # new cookies starts empty list
-        new_cookies = []
-        for cookie in cookies:
-            if self.cookie_name in cookie:
-                # skip existing session cookie
-                continue
-            new_cookies.append(cookie)
                 
         # create our replacement cookie        
-        cookie = f'{self.cookie_name}={self.session_key}'
+        cookie = f'{self._cookie_name}={self.session_key}'
+        if max_age:
+            cookie += f'; Max-Age={max_age}'
         cookies.append(cookie)
+
+        # join the cookies back together with ';' and inject into environment
         env['HTTP_COOKIE'] = ';'.join(cookies)
         
     def purge(self):
-        if os.path.exists(self._session_fname(self.session_key)):
-            os.remove(self._session_fname(self.session_key))
+        """purge old session if needed"""
+        if self._mode == 'file':
+            if os.path.exists(self._session_fname(self.session_key)):
+                os.remove(self._session_fname(self.session_key))
+        elif self._mode == 'memory':
+            if self.session_key in self._sessions:
+                del self._sessions[self.session_key]
         self.data = {}
+        
+    def clear(self):
+        self.purge()
     
 
 def redirect(url, code=None):
@@ -454,7 +489,11 @@ def search_file(filename, *args):
     return None
 
 def flash(*args, **kwargs):
-    """flash not implemented simply prints to the console"""
+    """flash MUST have a session to work"""
+
+    if g._flash is None:
+        g._flash = []
+    g._flash.append((args, kwargs))
     print(args, kwargs)
 
 def route_match(route, path):
@@ -671,10 +710,10 @@ def header_get(headers, header_key):
             return header[1]
     return None
 
-def get_cookies(environ):
+def _get_cookies(environ):
         """
         Gets a cookie object (which is a dictionary-like object) from the
-        request environment; caches this value in case get_cookies is
+        request environment; caches this value in case _get_cookies is
         called again for the same request.
         """
         header = environ.get('HTTP_COOKIE', '')
@@ -690,6 +729,21 @@ def get_cookies(environ):
         environ['minimus.cookies'] = (cookies, header)
         return cookies
 
+def get_cookies(environ, secret=None):
+    """get_cookies() - return a cookie object from the request environment
+    Args:
+        environ (dict): the WSGI environment
+
+    Returns:
+        list: a list of dictionaries with cookie name and value
+    """
+    cookies_raw = _get_cookies(environ)
+    cookies = []
+    for key, value in cookies_raw.items():
+        cookie = {'name': key, 'value': get_cookie(environ, key, secret)}
+        cookies.append(cookie)
+        
+    return cookies
 
 def get_cookie(environ, name, secret=None):
     """get a named cookie from the environment
@@ -702,12 +756,12 @@ def get_cookie(environ, name, secret=None):
     Returns:
         str: the cookie value or None
     """
-    cookies = get_cookies(environ)
+    cookies = _get_cookies(environ)
     morsel = cookies.get(name)
     value = None
     if morsel:
         if secret:
-            value = decrypt(secret, morsel.value).decode('UTF-8', 'ignore')
+            value = decrypt(secret, morsel.value)
         else:
             value = morsel.value
     return value
@@ -729,7 +783,7 @@ class Minimus:
             from minimus import Minimus
             app = Minimus(__name__)
         """
-        global _app, _app_dir, _template_dir, _static_dir # module will need this
+        global _app, _app_dir, _template_dir, _static_dir, session # module will need this
         self.routes = None
         
         # minimus config
@@ -761,6 +815,7 @@ class Minimus:
         self.environ = None
         self.start_response = None
         self.request = None
+
 
     def response_encode(self, x):
         if isinstance(x, str):
@@ -809,7 +864,7 @@ class Minimus:
             print(environ)
 
         # before request -- can be "hooked" at application level
-        pre_cookies = get_cookies(environ)
+        pre_cookies = _get_cookies(environ)
         
         # before request
         self.app_before_request(environ)
@@ -825,7 +880,7 @@ class Minimus:
         self.app_after_request(environ)
         
         # look for special session cookie injection
-        post_cookies = get_cookies(environ)
+        post_cookies = _get_cookies(environ)
         if post_cookies != pre_cookies:
             # if msession is set
             session_key = get_cookie(environ, 'msession')
@@ -845,13 +900,14 @@ class Minimus:
         handler - callback function that handles the route.  By default the callback's first
         parameter is an environment variable.  The callback can also have OTHER paramerters that
         match the variables.
-        :param methods: (list) - HTTP Methods supported, by default it supports ["GET","POST"]
+        :param methods: (list) - HTTP Methods supported, by default it supports ["GET"]
+                   but can be ["POST", "GET", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH"]
         :param route_name: - the name of the route used by app.url_for(name) routing
         """
         if methods is None:
-            methods = ['GET','POST']
+            methods = ['GET']
         if not (isinstance(methods, list) or isinstance(methods, tuple)):
-            raise ValueError('Minimus add_route route={} methods must be a list type')
+            raise ValueError('Minimus add_route route={} methods must be a list or tuple of string methods')
         if self.routes is None:
             self.routes = []
         # avoid duplication
@@ -1218,7 +1274,10 @@ class MultiDict(MutableMapping):
             self._items = list(items)
         else:
             self._items = []
-        self._items.extend(six.iteritems(kw))
+        # original code
+        #self._items.extend(six.iteritems(kw))
+        # modified code
+        #self._items.extend(self._items.iter(items(**kw)))
 
     def __getitem__(self, key):
         for k, v in self._items:
@@ -1417,6 +1476,22 @@ def parse_querystring(environ):
     environ['paste.parsed_querystring'] = (parsed, source)
     return parsed
 
+def parse_querydict(environ):
+    """
+    Parses a query string into a python dict like ``{name: value}``.
+    if multiple values are given for a key, the values are returned as a list
+    like ``[value1, value2, ...]``.
+    """
+    d = {}
+    for k, v in parse_querystring(environ):
+        if k in d:
+            if not isinstance(d[k], list):
+                d[k] = [d[k]]
+            d[k].append(v)
+        else:
+            d[k] = v
+
+    return d
 
 def parse_formvars(environ, include_get_vars=True, encoding=None, errors=None):
     """Parses the request, returning a MultiDict of form variables.
@@ -1454,11 +1529,11 @@ def parse_formvars(environ, include_get_vars=True, encoding=None, errors=None):
         environ['QUERY_STRING'] = ''
         inp = environ['wsgi.input']
         kwparms = {}
-        if six.PY3:
-            if encoding:
-                kwparms['encoding'] = encoding
-            if errors:
-                kwparms['errors'] = errors
+    
+        if encoding:
+            kwparms['encoding'] = encoding
+        if errors:
+            kwparms['errors'] = errors
         fs = cgi.FieldStorage(fp=inp,
                               environ=environ,
                               keep_blank_values=True,
@@ -1584,7 +1659,19 @@ def validate_csrf(session:Session, csrf_token):
         return True
     return False
 
-
+def flask_request(env):
+    """adapter for wsgi flask-like request object"""
+    request = JSObj()
+    request.method = env['REQUEST_METHOD']
+    request.form = parse_formvars(env)
+    request.cookies = get_cookies(env)
+    request.args = parse_querystring(env)
+    request.path = env['PATH_INFO']
+    request.is_json = request.path.endswith('.json')
+    #request.json = None
+    #request.get_json = lambda: request.json
+    
+    return request
 if __name__ == '__main__':
     mini = Minimus('__main__')
     print(mini.logo())
