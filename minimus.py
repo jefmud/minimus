@@ -782,6 +782,8 @@ def prune_headers(headers):
             header_count[header_type] = header_count.get(header_type, 0) + 1
             if header_count[header_type] <= 1:
                 pruned_headers.append(header)
+        else:
+            pruned_headers.append(header)
         
     return pruned_headers
 
