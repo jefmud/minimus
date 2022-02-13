@@ -21,7 +21,7 @@
 #    choices for alternate WSGI servers
 #
 ###########################################
-VERSION = '0.0.4'
+VERSION = '0.0.5'
 
 #from functools import wraps
 import base64
@@ -54,7 +54,7 @@ class JSObj(dict):
         if attr_name in self:
             del self[attr_name]
         else:
-            raise AttributeError("No such attribute: " + attr_name)
+            raise AttributeError(f"JSObj().__delattr__({attr_name}) - No such attribute")
         
 # global level
 _app = None
@@ -176,6 +176,10 @@ class Response:
         self.add_cookie(name, '', days=0)
 
     def add_header(self, headers):
+        for header in self._headers:
+            if header == headers:
+                return
+
         if isinstance(headers, str):
             # if headers was given as a string
             self._headers.append(('Content-Type', headers))
@@ -766,6 +770,21 @@ def get_cookie(environ, name, secret=None):
             value = morsel.value
     return value
 
+def prune_headers(headers):
+    """prune_headers() - remove headers that are duplicate"""
+    pruned_headers = []
+    headlen = len(headers)
+    header_count = {}
+    for i in range(headlen):
+        header = headers[headlen-i-1]
+        header_type = header[0].lower()
+        if header_type in ['content-type', 'content-length', 'content-encoding', 'content-language', 'content-location', 'content-md5', 'content-range', 'content-type', 'expires', 'last-modified', 'set-cookie', 'cache-control', 'pragma']:
+            header_count[header_type] = header_count.get(header_type, 0) + 1
+            if header_count[header_type] <= 1:
+                pruned_headers.append(header)
+        
+    return pruned_headers
+
 # our framework
 class Minimus:
     def __init__(self, app_file, template_dir="templates",
@@ -887,7 +906,10 @@ class Minimus:
             if session_key:
                 header = cookie_header('msession', session_key)
                 headers.append(header)
-            
+
+        # make sure headers are not duplicated
+        headers = prune_headers(headers)
+
         # classic WSGI return
         start_response(status_str, headers)
         return iter(response_body)
