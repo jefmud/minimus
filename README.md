@@ -146,3 +146,36 @@ app.run(host='0.0.0.0', port=5000)
 ```
         
 So that's it for now.  I will improve the documentation and feel free to tear it apart, cut-and-paste, etc.  There are no guarantees you will see more documentation unless I get motivated.
+
+```
+from minimus import Minimus, parse_formvars
+
+app = Minimus(__name__)
+
+simple_form = """
+<h1>My Form</h1>
+<form method="post">
+  Name<br />
+  <input name="name" type="text"><br />
+  Enter your message<br />
+  <textarea name="message"></textarea><br />
+  <input type="submit">
+</form>
+"""
+
+@app.route('/formdemo', methods=['GET','POST'])
+def hello(environ):
+    if environ['REQUEST_METHOD'] == 'POST': #check the type of request
+        fields = parse_formvars(environ) #parse the fields returned from the environment
+        return f"<h1>Hello</h1><p>Thanks for for the message:\n {fields}.</p>"
+    return simple_form
+
+app.run()
+```
+ 
+
+That's all there is to pick up the form fields!  One thing that you will note is that fields is/are returned as a Multidict type.  This is a common Python extra type that allows a dictionary to have multiple keys with the same name.
+
+Why would you want to do this?  Mostly because it allows you to have a response where a key is defined "temporally".  You could have an initial answer followed by additional specifications later on.  Or you could possibly have a search that allows for multiple search terms.  The possibilities are endless.
+
+What should be noted is that if you access fields as a dictionary, you will get the FIRST field with that name and the rest will be ignored.
