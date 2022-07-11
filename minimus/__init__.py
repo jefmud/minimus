@@ -21,7 +21,7 @@
 #    choices for alternate WSGI servers
 #
 ###########################################
-VERSION = '0.0.8'
+VERSION = '0.0.8.1'
 
 #from functools import wraps
 import base64
@@ -643,7 +643,7 @@ def route_encode(route, **kwargs):
             if varval:
                 nparts.append(str(varval))
             else:
-                raise ValueError(f"route_encode() - {varname} not in keyword args")
+                raise ValueError(f"route_encode({route}, {kwargs}) - {varname} not in keyword args")
         else:
             nparts.append(rp)
     url = '/'.join(nparts)
@@ -1023,7 +1023,10 @@ class Minimus:
         self.server = server
 
         if server == 'paste':
-            """Start the server with the paste server"""
+            """Start the server with the paste server.  Can be used for development and production
+            Unfortunately, it does not support SSL and is not actively maintained.
+            Very stable, decent performance.
+            """
             from paste import httpserver
             from paste.translogger import TransLogger
             handler = TransLogger(self.wsgi, setup_console_handler=(not self.quiet))
@@ -1031,12 +1034,14 @@ class Minimus:
             httpserver.serve(handler, host=host, port=port)
 
         if server == 'wsgiref':
+            """Basic wsgiref server.  Good for development only."""
             from wsgiref.simple_server import make_server
             with make_server(host, port, self.wsgi) as httpd:
                 print("WSGIREF Serving on {}:{}".format(host, port))
                 httpd.serve_forever()
 
         if server == 'gevent':
+            """Gevent server, high speed, but no threading. Supports SSL (if keyfile and certfile are set)"""
             from gevent import pywsgi
             address = (host, port)
             print("Gevent serving on {}:{}".format(host, port))
@@ -1044,12 +1049,17 @@ class Minimus:
             httpd.serve_forever()
 
         if server == 'waitress':
+            """Start the server with the waitress server. Solid 'Production' WSGI server,
+            no logging is set up.  Not the fastest server, but one of the most stable.
+            """
             from waitress import serve
             print("Waitress serving on {}:{}".format(host, port))
             serve(self.wsgi, host=host, port=port, _quiet=self.quiet)
             
         if server == 'twisted':
-            """Twisted server"""
+            """Twisted server - a bit more complicated server.
+            High performance for prodcution.  Supports SSL (if keyfile and certfile are set)
+            """
             from twisted.web.server import Site
             from twisted.web.wsgi import WSGIResource
             from twisted.internet import reactor
@@ -1059,7 +1069,12 @@ class Minimus:
                 startLogging(sys.stdout)
             resource = WSGIResource(reactor, reactor.getThreadPool(), self.wsgi)
             site = Site(resource)
-            reactor.listenTCP(port, site)
+            if certfile:
+                from twisted.internet import ssl
+                sslContext = ssl.DefaultOpenSSLContextFactory(keyfile, certfile)
+                reactor.listenSSL(port, site, sslContext)
+            else:
+                reactor.listenTCP(port, site)
             reactor.run()
 
 
