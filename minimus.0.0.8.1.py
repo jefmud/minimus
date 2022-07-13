@@ -1119,7 +1119,7 @@ class Minimus:
                 elif path_info.endswith('.js'):
                     response_body = get_text_file(path_info)
                     response = Response(response_body, 200, 'text/javascript')
-                elif ext_check(path_info, ['jpg', 'jpeg', 'gif', 'png', 'ico']):
+                elif ext_check(path_info, ['jpg', 'jpeg', 'gif', 'png', 'ico', 'svg']):
                     # image rendering short circuits below to return
                     response_body = get_file(path_info, ftype='binary')
                     # construct headers to contain expected image type, and cache
