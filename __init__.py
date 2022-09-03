@@ -24,6 +24,7 @@
 from .minimus import (
     # the framework
     Minimus,
+    ClassView,
     
     # session object
     Session,
