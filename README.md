@@ -1,4 +1,6 @@
-# minimus
+# Minimus
+
+(note if you want to skip my chattering about why I did this and get down to trying it out https://github.com/jefmud/minimus/wiki)
 
 Minimus is an attempt to write my own Framework similar to Bottle, Flask, Pyramid, etc.
 
