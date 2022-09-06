@@ -1162,7 +1162,7 @@ class Minimus:
             return Response(response_body).wsgi
 
         # handle static files
-        if self.static_dir in path_info:
+        if self.static_dir in path_info or 'favicon.ico' in path_info:
             # search the usual locations for our file, return if exists
             local_fname = search_file(path_info, self.app_dir, self.static_dir, self.template_dirs)
 
