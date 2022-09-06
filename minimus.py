@@ -21,7 +21,7 @@
 #    choices for alternate WSGI servers
 #
 ###########################################
-_version_ = '0.0.9rc'
+_version_ = '0.0.9.2rc'
 _author_ = 'Jeff Muday'
 _license_ = 'MIT'
 
@@ -1175,7 +1175,7 @@ class Minimus:
                 elif path_info.endswith('.js'):
                     response_body = get_text_file(path_info)
                     response = Response(response_body, 200, 'text/javascript')
-                elif ext_check(path_info, self._graphic_handlers):
+                elif ext_check(path_info, self._graphic_types):
                     # image rendering short circuits below to return
                     response_body = get_file(path_info, ftype='binary')
                     # construct headers to contain expected image type, and cache
