@@ -48,6 +48,7 @@ from http.cookies import SimpleCookie, Morsel, CookieError
 import json
 import mimetypes
 import os
+import pathlib
 import pickle
 import random
 import string
@@ -558,7 +559,10 @@ def search_file(filename, *args):
             paths.append(os.path.join(arg, fname))
 
     for fn in paths:
-        if os.path.exists(fn):
+        #if os.path.exists(fn):
+        # *** better way ***
+        path = pathlib.Path(fn)
+        if path.is_file():        
             return fn
     return None
 
@@ -696,14 +700,16 @@ def get_file(filename, *args, **kwargs):
     """
     real_filename = search_file(filename, *args)
     file_contents = None
-    if real_filename:
-        if 'bin' in kwargs.get('ftype',''):
-            # binary file types
-            with open(real_filename, 'rb') as fp:
-                file_contents = fp.read()
-        else:
-            with open(real_filename) as fp:
-                file_contents = fp.read()
+    path = pathlib.Path(real_filename)
+    if path.is_file():
+        if real_filename:
+            if 'bin' in kwargs.get('ftype',''):
+                # binary file types
+                with open(real_filename, 'rb') as fp:
+                    file_contents = fp.read()
+            else:
+                with open(real_filename) as fp:
+                    file_contents = fp.read()
 
     return file_contents
 
@@ -1060,7 +1066,7 @@ class Minimus:
             return "My 404 message!"
         app.not_found_html=my404
         """
-        return '<h1>404 Not Found</h1>'
+        return '<h1>404</h1><p>Not Found</p>'
 
     def run(self, host='127.0.0.1', port=5000, server='wsgiref', debug=False, keyfile=None, certfile=None, quiet=False):
         """run() starts a "internal" server at host/port with server
@@ -1154,6 +1160,7 @@ class Minimus:
         """render a path and its response to a three tuple
         (content, status_str, headers)
         """
+        status_code = 200
         request_method = self.environ.get('REQUEST_METHOD')
 
         if not(self.routes):
@@ -1185,7 +1192,10 @@ class Minimus:
                 else:
                     # default html/text
                     response_body = get_text_file(path_info)
-                    response = Response(response_body)
+                    if response_body is None:
+                        status_code = 404
+                        response_body = self.not_found_html()
+                    response = Response(response_body, status_code)
             else:
                 # path_info file not found, respond 404
                 response_body = self.not_found_html()
