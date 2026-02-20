@@ -14,7 +14,7 @@ I have succeeded at some level, but can't recommend you use it for production ju
 
 Note: I decide to NOT make Minimus backward compatible to Python 2.7, it is past its end of support, so I feel justified!
 
-Like Marcell's Bottle project, I decided to keep Minimus as a single file.  A bit of a PEP 20 violation except the idea of simplicity is the self-contained nature.  I failed to make it actually self contained, since to be really useful it includes Jinja2 as an import.  If you choose to use a non WSGIRef server like Paste, Gevent, Waitress more imports will be required, be forwarned.
+Like Marcell's Bottle project, I decided to keep Minimus as a single file.  A bit of a PEP 20 violation except the idea of simplicity is the self-contained nature.  I failed to make it actually self contained, since to be really useful it includes Jinja2 as an import.  I put in hooks for servers like Paste, Gevent, Waitress, and Twisted.  I have a long-running server running Minimus running on top of Twisted.
 
 Now, that I've spent some time creating Minimus.  I can say it is "simple" to me now.  I started writing a framework around Python Paste https://pypi.org/project/Paste/, I got a bit of confidence that I wasn't wasting my time!  But, got a little sad learning that the author Chris Dent was not actively developing it!  So after some made some refactoring I jump started the application object as a generic WSGI app.
 
